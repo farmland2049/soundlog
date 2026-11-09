@@ -123,6 +123,67 @@ import SoundlogCore
                     } else {
                         try record("speakerAlignment", "skipped", "转写或说话人分离未完成")
                     }
+                    // Render one user-facing transcript and a hash-indexed run manifest from
+                    // whatever modules completed. A module failure never suppresses these.
+                    var artifactURLs: [String: URL] = [:]
+                    let candidatesURL = output.appendingPathComponent("speaker-aligned-transcript.json")
+                    if let data = try? Data(contentsOf: candidatesURL),
+                       let document = try? JSONDecoder().decode(SpeakerAlignedTranscriptDocument.self, from: data) {
+                        for ext in ["md", "txt"] {
+                            let url = output.appendingPathComponent("transcript-with-speaker-candidates.\(ext)")
+                            do {
+                                try AtomicFile.write(Data(UnifiedOutput.renderTranscript(document, format: ext).utf8), to: url)
+                                artifactURLs["transcript-\(ext)"] = url
+                            } catch { anyFailed = true; try record("unifiedTranscript", "failed", String(describing: error)) }
+                        }
+                    } else {
+                        try record("unifiedTranscript", "skipped", "没有可用候选对齐结果")
+                    }
+                    let duration = try? UnifiedOutput.wavDuration(data: Data(contentsOf: file))
+                    var ranges: [AudioTimeRange] = []
+                    if let rawData = try? Data(contentsOf: output.appendingPathComponent("raw.json")), let raw = try? JSONDecoder().decode(RawTranscription.self, from: rawData) {
+                        ranges += raw.coverage.compactMap { try? AudioTimeRange(startOffsetSeconds: $0.start, endOffsetSeconds: $0.end) }
+                        artifactURLs["transcription-raw"] = output.appendingPathComponent("raw.json")
+                    }
+                    for name in ["sound-events.json", "speaker-timeline.json", "speaker-aligned-transcript.json"] {
+                        let url = output.appendingPathComponent(name)
+                        if FileManager.default.fileExists(atPath: url.path) { artifactURLs[name] = url }
+                    }
+                    for name in ["speaker-aligned-transcript.md", "status.json", "processing-status.json"] {
+                        let url = output.appendingPathComponent(name)
+                        if FileManager.default.fileExists(atPath: url.path) { artifactURLs[name] = url }
+                    }
+                    if let duration, let coverage = try? UnifiedOutput.coverageReport(ranges: ranges, duration: duration), coverage.gaps.isEmpty {
+                        try record("inputCoverage", "completed")
+                    } else if duration != nil { try record("inputCoverage", "incomplete", "覆盖存在缺口或无转写覆盖") }
+                    let sampleMap = Dictionary(uniqueKeysWithValues: artifactURLs.compactMap { key, url -> (String, [String])? in
+                        guard let data = try? Data(contentsOf: url) else { return nil }
+                        if key == "transcription-raw", let raw = try? JSONDecoder().decode(RawTranscription.self, from: data) {
+                            return (key, raw.segments.map { "\($0.startOffsetSeconds)-\($0.endOffsetSeconds): \($0.text)" })
+                        }
+                        if key == "speaker-timeline.json", let doc = try? JSONDecoder().decode(SpeakerTimelineDocument.self, from: data) {
+                            return (key, doc.segments.map { segment in
+                                let label = segment.speakerID ?? "未匹配"
+                                return "\(segment.startOffsetSeconds)-\(segment.endOffsetSeconds): \(label)"
+                            })
+                        }
+                        if key == "speaker-aligned-transcript.json", let doc = try? JSONDecoder().decode(SpeakerAlignedTranscriptDocument.self, from: data) {
+                            return (key, doc.segments.map { segment in
+                                let candidates = segment.speakerCandidates.isEmpty ? "未匹配" : segment.speakerCandidates.joined(separator: "、")
+                                return "\(segment.absoluteStartLocal): [\(candidates)] \(segment.text)"
+                            })
+                        }
+                        if key == "sound-events.json", let doc = try? JSONDecoder().decode(SoundEventsDocument.self, from: data) {
+                            return (key, doc.events.map { "\($0.startOffsetSeconds)-\($0.endOffsetSeconds): \($0.category)" })
+                        }
+                        return nil
+                    })
+                    try record("runManifest", "completed")
+                    if FileManager.default.fileExists(atPath: statusURL.path) { artifactURLs["processing-status"] = statusURL }
+                    let manifest = try UnifiedOutput.buildManifest(inputPath: file.path, sourceSHA256: hash, duration: duration, coverageRanges: ranges, modules: status.modules, samples: sampleMap, artifactURLs: artifactURLs, baseDirectory: output)
+                    do {
+                        try AtomicFile.write(try encoder.encode(manifest), to: output.appendingPathComponent("run-manifest.json"))
+                    } catch { anyFailed = true; try record("runManifest", "failed", String(describing: error)) }
                     print("三类分析结束: \(output.path)")
                 }
                 if anyFailed { exit(1) }

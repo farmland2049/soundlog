@@ -2,6 +2,8 @@
 
 更新日期：2026-11-10。当前阶段：通用转写、环境声事件核心、匿名说话人时间线、候选对齐及FluidAudio v0.17.7离线适配器已实现；新增身份库跨平台数据骨架、整合状态校验与模块断点续跑。Mac历史验证为`swift build`通过、`swift test` 32项通过；本轮Linux在原始Package manifest下`swift build`与`swift test`通过，共47项测试。SwiftPM解析时将FluidAudio 0.17.7及声明的Nemo二进制工件取入忽略目录`.build/`；未下载说话人模型权重、未处理真实录音。
 
+本轮 `stage6-unified-output` Linux 合成验证已补齐统一候选逐字稿、run-manifest、覆盖缺口和首中尾抽样、原子写入失败测试，以及 `scripts/mac-verify.sh`。最终 `swift build` 通过，`swift test` 共54项通过；脚本报告见`reports/mac-verify.md`。Apple 框架与 Mac 实机流程仍未由 Linux 验证。
+
 ## 目标与边界
 
 以[需求说明](需求说明.md)为当前需求来源：根据文件名和录音生成逐字稿及绝对时间戳；识别环境音供后续推理；尽可能区分本人及他人的声音，覆盖自言自语、单人讲话与对谈。三类结果共享原时间轴，环境声识别和说话人区分不以成功转字为前提。场景自动推断不是本轮三项核心功能的必做交付。
@@ -55,6 +57,10 @@
 下一步在Mac上验证本轮Core改动、模块续跑和身份库结构；之后再考虑真实身份样本（须用户明确确认）及后续录音稳定性。人工听音暂缓，识别准确性继续标为未核验。本轮未下载说话人模型权重、未处理真实录音、未创建真实声纹、未人工听音、未推送。Linux验证时SwiftPM已将FluidAudio声明的Nemo二进制工件取入忽略的`.build/`（约197 MB）。
 
 ## 验收与证据
+
+- stage6 本轮结果：Core 纯函数渲染匿名候选稿、按 WAV 头计算时长/覆盖缺口、首中尾采样及清单产物 SHA-256。`process` 在模块结果后生成 Markdown/TXT、`run-manifest.json`，保留失败或 unsupported 状态。若无法从格式或结果取得音频总时长，manifest 将该字段和覆盖报告标为 `null`；当前仅 WAV 有可靠时长解析。
+- `bash scripts/mac-verify.sh` 使用合成 1 秒静音 WAV；报告写入 `reports/mac-verify.md`。脚本记录 OS/Swift 版本、build/test 状态、测试数及 process 模块状态。Linux 上 Apple 模块 `unsupported` 并导致 process 非零退出是预期；Mac 未执行，模型缺失实机状态未验证。
+- 本轮新增 7 项合成单元测试，累计54项全部通过；`git diff --check`通过。没有加入真实录音、模型、声纹或身份样本。
 
 - [文件迁移清单](记录/文件迁移清单.json)：原路径、现路径、每个文件的字节数、SHA-256及权限；包含兼容链接状态。
 - `记录/整理验收.json`：实际验收后生成，包括完整性、路径、原录音可读性、工具路径及压缩包检查。未见此文件前不得把预期检查写成已通过。
