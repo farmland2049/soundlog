@@ -14,11 +14,13 @@
 
 ## 当前状态
 
-目前包含需求、研究综述、项目状态、执行计划、时间轴基础及通用转写入口。现有历史工具和识别产物不属于本公开版本，也不代表可直接复现。
+目前包含需求、研究综述、项目状态、执行计划、时间轴基础、通用转写入口及环境声事件跨平台核心。SoundAnalysis 和真实录音效果待 Mac 验证。现有历史工具和识别产物不属于本公开版本，也不代表可直接复现。
 
 本仓库不含原始录音、逐字稿、身份样本、模型权重、运行日志或本机迁移清单。录音和逐字稿可能包含私人内容，因此这些材料保留在本机。
 
 `swift run SoundlogCLI manifest --input <文件或目录> --output-dir <输出根目录>`可生成输入清单。`swift run SoundlogCLI transcribe --input <文件或目录> --output-dir <输出根目录> [--run-dir <已有运行目录>] [--param locale=zh-CN]`用于苹果转写入口。不给`--run-dir`时会在输出根目录创建新的独立运行目录；续跑时传回同一运行目录。Apple Speech实现尚未在Mac编译验证，Linux会明确报平台不支持并以非零状态退出。
+
+`swift run SoundlogCLI sound-events --input <文件或目录> --output-dir <输出根目录> [--run-dir <已有运行目录>] [--param confidenceThreshold=0.3] [--param minimumEventDurationSeconds=0.5] [--param mergeGapSeconds=0.5]`对每个文件生成 `sound-events.json`，保留分类窗口及候选，并输出按阈值合并的事件。阈值范围为 0–1；最短事件时长和合并间隔须为非负秒数，非法参数会报错。Linux 可构建和测试核心，但没有 SoundAnalysis，运行该子命令会明确报错并非零退出。SoundAnalysis SDK 实现及真实录音效果**待 Mac 验证**。
 
 ## 技术边界
 

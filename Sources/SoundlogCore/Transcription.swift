@@ -1,7 +1,7 @@
 import Foundation
 
 public struct CLIOptions: Equatable, Sendable {
-    public enum Command: String, Sendable { case manifest, transcribe }
+    public enum Command: String, Sendable { case manifest, transcribe, soundEvents = "sound-events" }
     public let command: Command
     public let input: URL
     public let outputRoot: URL
@@ -10,7 +10,7 @@ public struct CLIOptions: Equatable, Sendable {
     public let runDirectory: URL?
 
     public static func parse(_ arguments: [String]) throws -> CLIOptions {
-        guard let first = arguments.first, let command = Command(rawValue: first) else { throw TranscriptionError.usage("用法: SoundlogCLI <manifest|transcribe> --input 路径 --output-dir 路径 [--engine 标识] [--run-dir 已有运行目录] [--param key=value]") }
+        guard let first = arguments.first, let command = Command(rawValue: first) else { throw TranscriptionError.usage("用法: SoundlogCLI <manifest|transcribe|sound-events> --input 路径 --output-dir 路径 [--engine 标识] [--run-dir 已有运行目录] [--param key=value]") }
         var values: [String: String] = [:], parameters: [String: String] = [:]
         var index = 1
         while index < arguments.count {
@@ -159,7 +159,9 @@ public struct TranscriptionPipeline: Sendable {
     }
 }
 
-public struct FileProcessingResult: Sendable { public let file: URL; public let outputDirectory: URL; public let decision: ResumeDecision }
+public struct FileProcessingResult: Sendable { public let file: URL; public let outputDirectory: URL; public let decision: ResumeDecision; public let failed: Bool
+    public init(file: URL, outputDirectory: URL, decision: ResumeDecision, failed: Bool = false) { self.file = file; self.outputDirectory = outputDirectory; self.decision = decision; self.failed = failed }
+}
 public struct TranscriptionRun: Sendable {
     public let engine: any TranscriptionEngine
     public init(engine: any TranscriptionEngine) { self.engine = engine }
@@ -173,6 +175,7 @@ public struct TranscriptionRun: Sendable {
                 let statusURL = output.appendingPathComponent("status.json"), rawURL = output.appendingPathComponent("raw.json")
                 let decision = ResumePlanner.plan(expected: fingerprint, statusURL: statusURL, rawURL: rawURL)
                 if decision == .reuse { outcomes.append(FileProcessingResult(file: file, outputDirectory: output, decision: decision)); continue }
+                var failed = false
                 do {
                     let raw = try await TranscriptionPipeline(engine: engine).run(file: file, runDirectory: output, parameters: parameters)
                     let state: TranscriptionState = raw.status == "completed_with_text" ? .completedWithText : .completedNoText
@@ -180,12 +183,13 @@ public struct TranscriptionRun: Sendable {
                     let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
                     try AtomicFile.write(try encoder.encode(status), to: statusURL)
                 } catch {
+                    failed = true
                     let status = TranscriptionStatus(state: .failed, error: String(describing: error), fingerprint: fingerprint)
                     let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
                     try? AtomicFile.write(try encoder.encode(status), to: statusURL)
                 }
-                outcomes.append(FileProcessingResult(file: file, outputDirectory: output, decision: decision))
-            } catch { outcomes.append(FileProcessingResult(file: file, outputDirectory: runDirectory, decision: .rerun("\(error)"))) }
+                outcomes.append(FileProcessingResult(file: file, outputDirectory: output, decision: decision, failed: failed))
+            } catch { outcomes.append(FileProcessingResult(file: file, outputDirectory: runDirectory, decision: .rerun("\(error)"), failed: true)) }
         }
         return outcomes
     }

@@ -75,6 +75,22 @@ final class TranscriptionTests: XCTestCase {
         XCTAssertEqual(again[0].decision, .reuse)
     }
 
+    func testTranscriptionRunExitStatusReflectsOneRealEngineFailure() async throws {
+        let dir = try fixtureDirectory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let good = try fakeSource(in: dir, filename: "20261109000000.wav")
+        let bad = try fakeSource(in: dir, filename: "20261109000001.wav")
+        let result = EngineResult(segments: [TranscriptSegment(start: 0, end: 1, text: "ok")], coveredRanges: [try AudioTimeRange(startOffsetSeconds: 0, endOffsetSeconds: 2)])
+        let run = TranscriptionRun(engine: SelectiveFailureEngine(result: result))
+        let outcomes = await run.process(files: [good, bad], runDirectory: dir.appendingPathComponent("partial"))
+        XCTAssertEqual(outcomes.count, 2)
+        XCTAssertFalse(outcomes[0].failed)
+        XCTAssertTrue(outcomes[1].failed)
+        XCTAssertNotEqual(TranscriptionExitStatus.exitCode(for: outcomes), 0)
+
+        let success = await TranscriptionRun(engine: FakeEngine(identifier: "good", result: result)).process(files: [good], runDirectory: dir.appendingPathComponent("success"))
+        XCTAssertEqual(TranscriptionExitStatus.exitCode(for: success), 0)
+    }
+
     func testInjectedEngineWritesRawSeparatelyFromRenderedAbsoluteTranscript() async throws {
         let dir = try fixtureDirectory(); defer { try? FileManager.default.removeItem(at: dir) }
         let source = try fakeSource(in: dir, filename: "20240229235959.wav")
@@ -108,4 +124,12 @@ private struct FakeEngine: TranscriptionEngine {
 private struct FailingEngine: TranscriptionEngine {
     var identifier: String { "fake" }
     func transcribe(file: URL) async throws -> EngineResult { throw TranscriptionError.io("synthetic failure") }
+}
+private struct SelectiveFailureEngine: TranscriptionEngine {
+    let result: EngineResult
+    var identifier: String { "selective" }
+    func transcribe(file: URL) async throws -> EngineResult {
+        if file.lastPathComponent == "20261109000001.wav" { throw TranscriptionError.io("synthetic failure") }
+        return result
+    }
 }
