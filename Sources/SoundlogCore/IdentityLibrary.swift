@@ -61,7 +61,7 @@ public struct IdentityMatch: Codable, Equatable, Sendable {
     }
 }
 
-public enum IdentityLibraryError: Error, Equatable { case invalidSample, missingIdentity, incompatibleVectors }
+public enum IdentityLibraryError: Error, Equatable { case invalidSample, missingIdentity, incompatibleVectors, unconfirmedRename }
 
 /// In-memory Core model. Persist with JSONEncoder at the caller's chosen local path.
 public struct IdentityLibrary: Codable, Equatable, Sendable {
@@ -77,9 +77,7 @@ public struct IdentityLibrary: Codable, Equatable, Sendable {
     }
 
     @discardableResult public mutating func add(_ enrollment: IdentityEnrollment) -> UUID {
-        var pending = enrollment
-        pending.displayName = nil
-        pending.confirmed = false
+        let pending = Self.pending(enrollment, splitFrom: nil)
         enrollments.append(pending)
         return pending.id
     }
@@ -90,12 +88,28 @@ public struct IdentityLibrary: Codable, Equatable, Sendable {
     }
     public mutating func rename(_ id: UUID, to name: String) throws {
         guard let i = enrollments.firstIndex(where: { $0.id == id }), !name.isEmpty else { throw IdentityLibraryError.missingIdentity }
+        // Only explicitly confirmed identities may be renamed.
+        guard enrollments[i].confirmed else { throw IdentityLibraryError.unconfirmedRename }
         enrollments[i].displayName = name; enrollments[i].history.append(.init(action: .renamed, detail: name))
     }
     @discardableResult public mutating func split(_ id: UUID, into newEnrollment: IdentityEnrollment) throws -> UUID {
         guard let i = enrollments.firstIndex(where: { $0.id == id }) else { throw IdentityLibraryError.missingIdentity }
         enrollments[i].history.append(.init(action: .split, detail: newEnrollment.id.uuidString))
-        enrollments.append(newEnrollment); return newEnrollment.id
+        enrollments.append(Self.pending(newEnrollment, splitFrom: id))
+        return newEnrollment.id
+    }
+
+    /// Removes caller-supplied identity claims from every newly added or split enrollment.
+    private static func pending(_ enrollment: IdentityEnrollment, splitFrom parentID: UUID?) -> IdentityEnrollment {
+        var pending = enrollment
+        pending.displayName = nil
+        pending.confirmed = false
+        // A prefilled enrollment may carry forged confirmation/rename history as well.
+        pending.history.removeAll { $0.action == .confirmed || $0.action == .renamed }
+        if let parentID {
+            pending.history.append(.init(action: .split, detail: "split from \(parentID.uuidString)"))
+        }
+        return pending
     }
     public mutating func merge(_ sourceID: UUID, into targetID: UUID) throws {
         guard sourceID != targetID,

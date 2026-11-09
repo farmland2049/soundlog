@@ -32,6 +32,39 @@ final class IdentityMatchTests: XCTestCase {
         XCTAssertTrue(library.enrollments.first(where: { $0.id == first })!.history.map(\.action).contains(.revoked))
         XCTAssertTrue(library.enrollments.first(where: { $0.id == second })!.history.map(\.action).contains(.renamed))
     }
+    func testSplitEnrollmentRequiresExplicitConfirmation() throws {
+        var library = IdentityLibrary()
+        let parent = library.add(try enrollment([1, 0]))
+        let child = try library.split(parent, into: enrollment([0.9, 0.1]))
+
+        let matchBeforeConfirm = library.match(vector: [0.9, 0.1], minimumRawSimilarity: 0.8)
+        XCTAssertNil(matchBeforeConfirm.identityID)
+        XCTAssertNil(matchBeforeConfirm.displayName)
+        XCTAssertEqual(library.enrollments.first(where: { $0.id == child })?.history.last?.action, .split)
+    }
+    func testSplitSanitizesPrefilledConfirmationAndHistory() throws {
+        var library = IdentityLibrary()
+        let parent = library.add(try enrollment([1, 0]))
+        let supplied = try enrollment([0.9, 0.1], name: "Mallory")
+        let child = try library.split(parent, into: supplied)
+
+        let stored = try XCTUnwrap(library.enrollments.first(where: { $0.id == child }))
+        XCTAssertFalse(stored.confirmed)
+        XCTAssertNil(stored.displayName)
+        XCTAssertFalse(stored.history.contains(where: { $0.action == .confirmed }))
+        let match = library.match(vector: [0.9, 0.1], minimumRawSimilarity: 0.8)
+        XCTAssertNil(match.identityID)
+        XCTAssertNil(match.displayName)
+    }
+    func testRenameRequiresConfirmationAndUpdatesConfirmedName() throws {
+        var library = IdentityLibrary()
+        let pendingID = library.add(try enrollment([1, 0]))
+        XCTAssertThrowsError(try library.rename(pendingID, to: "Alice"))
+
+        try library.confirm(pendingID, name: "Alice")
+        try library.rename(pendingID, to: "Alicia")
+        XCTAssertEqual(library.enrollments.first(where: { $0.id == pendingID })?.displayName, "Alicia")
+    }
     func testSimilarityIsNamedRawScoreNotProbability() throws {
         var library = IdentityLibrary(); let id = library.add(try enrollment([1, 0])); try library.confirm(id, name: "Alice")
         let match = library.match(vector: [1, 0], minimumRawSimilarity: 0)
