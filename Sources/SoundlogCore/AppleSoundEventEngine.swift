@@ -17,7 +17,7 @@ public struct AppleSoundEventEngine: SoundEventEngine {
         let request = try SNClassifySoundRequest(classifierIdentifier: .version1)
         let observer = SoundClassificationObserver()
         try analyzer.add(request, withObserver: observer)
-        try analyzer.analyze()
+        await analyzer.analyze()
         if let error = observer.error { throw error }
         return SoundEventEngineResult(windows: observer.windows)
     }

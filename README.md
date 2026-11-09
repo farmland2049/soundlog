@@ -6,7 +6,7 @@
 
 - [需求说明](需求说明.md)：当前功能范围与时间轴、观测/推断边界。
 - [项目状态](PROJECT_STATUS.md)：截至 2026-11-09 的验证进展与未实施事项。
-- [后续执行计划](.hermes/plans/2026-11-09_144613-soundlog.md)：六阶段方案；第一阶段时间轴基础已启动。
+- [后续执行计划](.hermes/plans/2026-11-09_144613-soundlog.md)：六阶段方案；声音事件管线、匿名说话人时间线及 FluidAudio 离线分离适配器已接入。
 - [输出格式](资料/输出格式.md)：共同时间轴及首版结果字段约定。
 - [技术调研综述](资料/2026-11-09-Mac本地环境音与说话人识别/综合调研.md)：本地候选路线及公开证据限制。
 
@@ -14,14 +14,20 @@
 
 ## 当前状态
 
-目前包含需求、研究综述、项目状态、执行计划、时间轴基础、通用转写入口及环境声事件跨平台核心。SoundAnalysis 和真实录音效果待 Mac 验证。现有历史工具和识别产物不属于本公开版本，也不代表可直接复现。
+目前包含需求、研究综述、项目状态、执行计划、时间轴基础、通用转写入口、环境声事件核心及匿名说话人时间线。Speech、SoundAnalysis 和 FluidAudio 适配器均已在 macOS 27.2 上构建运行；一份长录音已完成三类本机处理，结果尚未人工核验。
 
 本仓库不含原始录音、逐字稿、身份样本、模型权重、运行日志或本机迁移清单。录音和逐字稿可能包含私人内容，因此这些材料保留在本机。
 
-`swift run SoundlogCLI manifest --input <文件或目录> --output-dir <输出根目录>`可生成输入清单。`swift run SoundlogCLI transcribe --input <文件或目录> --output-dir <输出根目录> [--run-dir <已有运行目录>] [--param locale=zh-CN]`用于苹果转写入口。不给`--run-dir`时会在输出根目录创建新的独立运行目录；续跑时传回同一运行目录。Apple Speech实现尚未在Mac编译验证，Linux会明确报平台不支持并以非零状态退出。
+`swift run SoundlogCLI manifest --input <文件或目录> --output-dir <输出根目录>`可生成输入清单。`swift run SoundlogCLI transcribe --input <文件或目录> --output-dir <输出根目录> [--run-dir <已有运行目录>] [--param locale=zh-CN]`用于苹果转写入口。不给`--run-dir`时会在输出根目录创建新的独立运行目录；续跑时传回同一运行目录。Apple Speech适配器已在 macOS 27.2 上构建通过，并对一份长录音完成本机处理；文字质量未经人工核验。Linux会明确报平台不支持并以非零状态退出。
 
-`swift run SoundlogCLI sound-events --input <文件或目录> --output-dir <输出根目录> [--run-dir <已有运行目录>] [--param confidenceThreshold=0.3] [--param minimumEventDurationSeconds=0.5] [--param mergeGapSeconds=0.5]`对每个文件生成 `sound-events.json`，保留分类窗口及候选，并输出按阈值合并的事件。阈值范围为 0–1；最短事件时长和合并间隔须为非负秒数，非法参数会报错。Linux 可构建和测试核心，但没有 SoundAnalysis，运行该子命令会明确报错并非零退出。SoundAnalysis SDK 实现及真实录音效果**待 Mac 验证**。
+`swift run SoundlogCLI sound-events --input <文件或目录> --output-dir <输出根目录> [--run-dir <已有运行目录>] [--param confidenceThreshold=0.3] [--param minimumEventDurationSeconds=0.5] [--param mergeGapSeconds=0.5]`对每个文件生成 `sound-events.json`，保留分类窗口及候选，并输出按阈值合并的事件。阈值范围为 0–1；最短事件时长和合并间隔须为非负秒数，非法参数会报错。SoundAnalysis 适配器已在 macOS 27.2 上构建通过；真实录音效果与人工误报/漏报抽查仍待验证。
+
+需要一次运行三类分析时，使用 `swift run SoundlogCLI process --input <文件或目录> --output-dir <本机产出目录> [--param locale=zh-CN] [--param confidenceThreshold=0.3] [--param minimumEventDurationSeconds=0.5] [--param mergeGapSeconds=0.5]`。每个录音在同一结果目录内生成 `raw.json`、`transcript.md`（有文字时）、`sound-events.json`、`speaker-timeline.json`、转写`status.json`及汇总三项状态的`processing-status.json`。三条管线独立执行并分别记录失败；重复指定同一`--run-dir`时，转写按哈希/引擎/参数续跑，声音分类和说话人分离会重新运行。
+
+首次在本机安装固定的离线说话人模型时，显式运行 `swift run SoundlogCLI speaker-models install`。此命令从固定版本模型仓库下载、校验权重与署名/来源文件，并加载模型但不处理录音；当前本机回执为 revision `df2625ac79a7ac6b65ad868fee6d80f320da4232`，21 项固定资产共 21,599,417 字节。FluidAudio 0.17.7 要求 macOS 14 或更高版本。SwiftPM 解析该包时还会下载其声明的 Nemo 二进制工件，即使 Swift 6.2 清单关闭了 traits；它与说话人模型分开，保存在忽略的 `.build/` 中。
+
+对文件执行匿名说话人分离：`swift run SoundlogCLI speaker-diarize --input <音频文件或目录> --output-dir <本机产出目录>`。每个输入生成 `speaker-timeline.json`，用文件名起始钟表时间映射绝对时间，不添加时区。编号仅在单个文件内有效，不是身份；当前示例运行的准确性尚未人工评价。
 
 ## 技术边界
 
-苹果原生转写及声音分类短样本有历史本机实测。FluidAudio 离线说话人方案尚未安装或在本机验证。未经长录音和人工抽查，不承诺识别准确率或处理速度。声音分类候选不等于已确认的地点、活动或现场/外放判断。
+苹果原生转写、声音分类及 FluidAudio 说话人分离均已有本机实跑；识别结果仍未经人工抽查，不承诺识别准确率或处理速度。声音分类候选不等于已确认的地点、活动或现场/外放判断。

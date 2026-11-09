@@ -3,7 +3,8 @@ import Foundation
 import Speech
 import AVFoundation
 
-/// Uses Apple's SpeechAnalyzer/SpeechTranscriber APIs. Not compiled or verified on Mac yet.
+/// Uses Apple's SpeechAnalyzer/SpeechTranscriber APIs on macOS 26 and later.
+@available(macOS 26.0, *)
 public struct AppleSpeechEngine: TranscriptionEngine {
     public let identifier = "apple-speech-analyzer"
     public let localeIdentifier: String

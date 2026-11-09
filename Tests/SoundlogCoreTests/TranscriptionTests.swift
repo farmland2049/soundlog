@@ -6,6 +6,8 @@ final class TranscriptionTests: XCTestCase {
         let parsed = try CLIOptions.parse(["manifest", "--input", "/tmp/in", "--output-dir", "/tmp/out", "--run-dir", "/tmp/run", "--param", "locale=en"])
         XCTAssertEqual(parsed.command, .manifest); XCTAssertEqual(parsed.parameters["locale"], "en")
         XCTAssertEqual(parsed.runDirectory?.path, "/tmp/run")
+        XCTAssertEqual(try CLIOptions.parse(["speaker-diarize", "--input", "x", "--output-dir", "y"]).command, .speakerDiarize)
+        XCTAssertEqual(try CLIOptions.parse(["process", "--input", "x", "--output-dir", "y"]).command, .process)
         XCTAssertThrowsError(try CLIOptions.parse(["transcribe", "--input", "x"]))
         XCTAssertThrowsError(try CLIOptions.parse(["bogus", "--input", "x", "--output-dir", "y"]))
         XCTAssertThrowsError(try CLIOptions.parse(["manifest", "--input", "x", "--output-dir", "y", "--param", "bad"]))

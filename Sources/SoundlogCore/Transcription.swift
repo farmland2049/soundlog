@@ -1,7 +1,7 @@
 import Foundation
 
 public struct CLIOptions: Equatable, Sendable {
-    public enum Command: String, Sendable { case manifest, transcribe, soundEvents = "sound-events" }
+    public enum Command: String, Sendable { case manifest, transcribe, soundEvents = "sound-events", speakerDiarize = "speaker-diarize", process }
     public let command: Command
     public let input: URL
     public let outputRoot: URL
@@ -10,7 +10,7 @@ public struct CLIOptions: Equatable, Sendable {
     public let runDirectory: URL?
 
     public static func parse(_ arguments: [String]) throws -> CLIOptions {
-        guard let first = arguments.first, let command = Command(rawValue: first) else { throw TranscriptionError.usage("用法: SoundlogCLI <manifest|transcribe|sound-events> --input 路径 --output-dir 路径 [--engine 标识] [--run-dir 已有运行目录] [--param key=value]") }
+        guard let first = arguments.first, let command = Command(rawValue: first) else { throw TranscriptionError.usage("用法: SoundlogCLI <manifest|transcribe|sound-events|speaker-diarize|process> --input 路径 --output-dir 路径 [--engine 标识] [--run-dir 已有运行目录] [--param key=value]；安装说话人模型: SoundlogCLI speaker-models install") }
         var values: [String: String] = [:], parameters: [String: String] = [:]
         var index = 1
         while index < arguments.count {
