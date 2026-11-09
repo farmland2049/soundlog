@@ -78,6 +78,17 @@ import SoundlogCore
                     #else
                     anyFailed = true; try record("speakerDiarization", "unsupported", "FluidAudio 仅支持 macOS")
                     #endif
+
+                    try record("speakerAlignment", "running")
+                    if status.modules["transcription"]?.state == "completed",
+                       status.modules["speakerDiarization"]?.state == "completed" {
+                        do {
+                            _ = try SpeakerTranscriptAlignmentPipeline().run(file: file, runDirectory: output)
+                            try record("speakerAlignment", "completed")
+                        } catch { anyFailed = true; try record("speakerAlignment", "failed", String(describing: error)) }
+                    } else {
+                        try record("speakerAlignment", "skipped", "转写或说话人分离未完成")
+                    }
                     print("三类分析结束: \(output.path)")
                 }
                 if anyFailed { exit(1) }

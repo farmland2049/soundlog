@@ -22,7 +22,7 @@
 
 `swift run SoundlogCLI sound-events --input <文件或目录> --output-dir <输出根目录> [--run-dir <已有运行目录>] [--param confidenceThreshold=0.3] [--param minimumEventDurationSeconds=0.5] [--param mergeGapSeconds=0.5]`对每个文件生成 `sound-events.json`，保留分类窗口及候选，并输出按阈值合并的事件。阈值范围为 0–1；最短事件时长和合并间隔须为非负秒数，非法参数会报错。SoundAnalysis 适配器已在 macOS 27.2 上构建通过；真实录音效果与人工误报/漏报抽查仍待验证。
 
-需要一次运行三类分析时，使用 `swift run SoundlogCLI process --input <文件或目录> --output-dir <本机产出目录> [--param locale=zh-CN] [--param confidenceThreshold=0.3] [--param minimumEventDurationSeconds=0.5] [--param mergeGapSeconds=0.5]`。每个录音在同一结果目录内生成 `raw.json`、`transcript.md`（有文字时）、`sound-events.json`、`speaker-timeline.json`、转写`status.json`及汇总三项状态的`processing-status.json`。三条管线独立执行并分别记录失败；重复指定同一`--run-dir`时，转写按哈希/引擎/参数续跑，声音分类和说话人分离会重新运行。
+需要一次运行三类分析时，使用 `swift run SoundlogCLI process --input <文件或目录> --output-dir <本机产出目录> [--param locale=zh-CN] [--param confidenceThreshold=0.3] [--param minimumEventDurationSeconds=0.5] [--param mergeGapSeconds=0.5]`。每个录音在同一结果目录内生成 `raw.json`、`transcript.md`（有文字时）、`sound-events.json`、`speaker-timeline.json`、`speaker-aligned-transcript.json/.md`、转写`status.json`及汇总运行状态的`processing-status.json`。三条识别管线独立执行并分别记录状态；逐字稿与说话人关联按区间时间重叠生成候选，不拆分原转写片段、不确定身份。重复指定同一`--run-dir`时，转写按哈希/引擎/参数续跑，声音分类和说话人分离会重新运行。
 
 首次在本机安装固定的离线说话人模型时，显式运行 `swift run SoundlogCLI speaker-models install`。此命令从固定版本模型仓库下载、校验权重与署名/来源文件，并加载模型但不处理录音；当前本机回执为 revision `df2625ac79a7ac6b65ad868fee6d80f320da4232`，21 项固定资产共 21,599,417 字节。FluidAudio 0.17.7 要求 macOS 14 或更高版本。SwiftPM 解析该包时还会下载其声明的 Nemo 二进制工件，即使 Swift 6.2 清单关闭了 traits；它与说话人模型分开，保存在忽略的 `.build/` 中。
 
