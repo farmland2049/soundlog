@@ -1,7 +1,10 @@
 .DS_Store
+.build/
+.swiftpm/
 /AGENTS.md
 /录音/
 /产出/
 /工具/
 /记录/
-/资料/
+/资料/*
+!/资料/输出格式.md

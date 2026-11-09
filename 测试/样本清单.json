@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "kind": "synthetic_unit_cases",
+  "note": "此清单仅列合成时间轴用例，不含实际录音文件名、片段位置、声音标签或身份信息。",
+  "cases": [
+    {
+      "id": "leap_day_midnight_rollover",
+      "filename": "20240229235959.mp3",
+      "offset_seconds": 2.0,
+      "expected_clock_time": "2024-03-01T00:00:01.000"
+    },
+    {
+      "id": "invalid_calendar_date",
+      "filename": "20250229000000.mp3",
+      "expected_error": "invalidCalendarDate"
+    },
+    {
+      "id": "malformed_filename",
+      "filename": "20261107100316-copy.mp3",
+      "expected_error": "invalidFilename"
+    }
+  ],
+  "real_audio_baseline": {
+    "status": "pending_manual_confirmation",
+    "recordings_remain_local": true
+  }
+}
