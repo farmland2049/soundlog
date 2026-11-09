@@ -38,13 +38,21 @@ public struct SpeakerTranscriptAlignmentPipeline: Sendable {
             throw TranscriptionError.io("转写与说话人结果的源文件或起始时间不一致")
         }
 
-        let recordingStart: RecordingStart
-        do {
-            recordingStart = try RecordingStart(filename: file.lastPathComponent)
-        } catch {
-            throw TranscriptionError.invalidStartTime(file.lastPathComponent)
-        }
+        let document = try Self.align(raw: raw, speakers: speakers, file: file)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try AtomicFile.write(try encoder.encode(document), to: runDirectory.appendingPathComponent("speaker-aligned-transcript.json"))
+        try AtomicFile.write(Data(render(document: document, transcript: raw).utf8), to: runDirectory.appendingPathComponent("speaker-aligned-transcript.md"))
+        return document
+    }
 
+    public static func align(raw: RawTranscription, speakers: SpeakerTimelineDocument, file: URL) throws -> SpeakerAlignedTranscriptDocument {
+        guard raw.sourceSHA256 == speakers.sourceSHA256, raw.recordingStartLocal == speakers.recordingStartLocal else {
+            throw TranscriptionError.io("转写与说话人结果的源文件或起始时间不一致")
+        }
+        let recordingStart: RecordingStart
+        do { recordingStart = try RecordingStart(filename: file.lastPathComponent) }
+        catch { throw TranscriptionError.invalidStartTime(file.lastPathComponent) }
         let entries = try raw.segments.compactMap { transcript -> SpeakerAlignedTranscriptEntry? in
             guard !transcript.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
             let textRange = try AudioTimeRange(
@@ -71,10 +79,10 @@ public struct SpeakerTranscriptAlignmentPipeline: Sendable {
             )
         }
 
-        let document = SpeakerAlignedTranscriptDocument(
+        return SpeakerAlignedTranscriptDocument(
             schemaVersion: 1,
             sourcePath: file.path,
-            sourceSHA256: actualHash,
+            sourceSHA256: raw.sourceSHA256,
             recordingStartLocal: try recordingStart.timestamp(atOffsetSeconds: 0),
             transcriptionEngine: raw.engine,
             diarizationEngine: speakers.engine,
@@ -82,17 +90,6 @@ public struct SpeakerTranscriptAlignmentPipeline: Sendable {
             accuracyAssessment: "not_evaluated",
             segments: entries
         )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try AtomicFile.write(
-            try encoder.encode(document),
-            to: runDirectory.appendingPathComponent("speaker-aligned-transcript.json")
-        )
-        try AtomicFile.write(
-            Data(render(document: document, transcript: raw).utf8),
-            to: runDirectory.appendingPathComponent("speaker-aligned-transcript.md")
-        )
-        return document
     }
 
     private func render(document: SpeakerAlignedTranscriptDocument, transcript: RawTranscription) -> String {

@@ -39,53 +39,87 @@ import SoundlogCore
                     let safeName = file.lastPathComponent.replacingOccurrences(of: "/", with: "_")
                     let output = run.appendingPathComponent("\(hash.prefix(16))-\(safeName)", isDirectory: true)
                     try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
-                    var status = IntegratedProcessingStatus(sourcePath: file.path, sourceSHA256: hash, updatedAt: ISO8601DateFormatter().string(from: Date()), modules: [:])
-                    func record(_ module: String, _ state: String, _ error: String? = nil) throws {
-                        status.modules[module] = IntegratedModuleStatus(state: state, error: error)
-                        status.updatedAt = ISO8601DateFormatter().string(from: Date())
+                    let statusURL = output.appendingPathComponent("processing-status.json")
+                    var status = (try? JSONDecoder().decode(IntegratedProcessingStatus.self, from: Data(contentsOf: statusURL)))
+                        .flatMap { $0.sourceSHA256 == hash ? $0 : nil }
+                        ?? IntegratedProcessingStatus(sourcePath: file.path, sourceSHA256: hash)
+                    func record(_ module: String, _ state: String, _ error: String? = nil, _ fingerprint: ResumeFingerprint? = nil) throws {
+                        status.record(module, state: state, error: error, fingerprint: fingerprint)
+                        try IntegratedArtifactValidator.validate(status: status)
                         try AtomicFile.write(try encoder.encode(status), to: output.appendingPathComponent("processing-status.json"))
                     }
-                    try record("transcription", "running")
+                    let locale = options.parameters["locale"] ?? "zh-CN"
+                    let transcriptionFingerprint = ResumeFingerprint(sourceSHA256: hash, engine: "apple-speech-analyzer", parameters: ["locale": locale])
+                    let rawArtifact = output.appendingPathComponent("raw.json")
                     #if canImport(Speech) && canImport(AVFoundation)
+                    let transcriptionDecision = IntegratedModuleResumePlanner.plan(expected: transcriptionFingerprint, status: status.modules["transcription"], artifactURL: rawArtifact)
+                    if transcriptionDecision == .reuse { try record("transcription", "completed", nil, transcriptionFingerprint) }
+                    else {
+                    try record("transcription", "running", nil, transcriptionFingerprint)
                     if #available(macOS 26.0, *) {
-                        let engine = AppleSpeechEngine(localeIdentifier: options.parameters["locale"] ?? "zh-CN")
-                        let outcomes = await TranscriptionRun(engine: engine).process(files: [file], runDirectory: run, parameters: ["locale": options.parameters["locale"] ?? "zh-CN"])
-                        if let result = outcomes.first, !result.failed { try record("transcription", "completed") }
+                        let engine = AppleSpeechEngine(localeIdentifier: locale)
+                        let outcomes = await TranscriptionRun(engine: engine).process(files: [file], runDirectory: run, parameters: ["locale": locale])
+                        if let result = outcomes.first, !result.failed { try record("transcription", "completed", nil, transcriptionFingerprint) }
                         else { anyFailed = true; try record("transcription", "failed", "转写管线失败；详情请查看同目录 status.json") }
                     } else {
                         anyFailed = true; try record("transcription", "unsupported", "需要 macOS 26 或更高版本")
+                    }
                     }
                     #else
                     anyFailed = true; try record("transcription", "unsupported", "Speech/AVFoundation 不可用")
                     #endif
 
-                    try record("soundEvents", "running")
+                    let soundFingerprint = ResumeFingerprint(sourceSHA256: hash, engine: "apple-sound-analysis-version1", parameters: ["confidenceThreshold": String(diarizationParameters.confidenceThreshold), "minimumEventDurationSeconds": String(diarizationParameters.minimumEventDurationSeconds), "mergeGapSeconds": String(diarizationParameters.mergeGapSeconds)])
+                    let soundArtifact = output.appendingPathComponent("sound-events.json")
+                    #if canImport(SoundAnalysis) && canImport(AVFoundation)
+                    let soundDecision = IntegratedModuleResumePlanner.plan(expected: soundFingerprint, status: status.modules["soundEvents"], artifactURL: soundArtifact)
+                    if soundDecision == .reuse { try record("soundEvents", "completed", nil, soundFingerprint) } else {
+                    try record("soundEvents", "running", nil, soundFingerprint)
                     #if canImport(SoundAnalysis) && canImport(AVFoundation)
                     do {
                         _ = try await SoundEventPipeline(engine: AppleSoundEventEngine()).run(file: file, runDirectory: output, parameters: diarizationParameters)
-                        try record("soundEvents", "completed")
+                        try record("soundEvents", "completed", nil, soundFingerprint)
                     } catch { anyFailed = true; try record("soundEvents", "failed", String(describing: error)) }
                     #else
                     anyFailed = true; try record("soundEvents", "unsupported", "SoundAnalysis/AVFoundation 不可用")
                     #endif
+                    }
+                    #else
+                    anyFailed = true; try record("soundEvents", "unsupported", "SoundAnalysis/AVFoundation 不可用")
+                    #endif
 
-                    try record("speakerDiarization", "running")
+                    let speakerFingerprint = ResumeFingerprint(sourceSHA256: hash, engine: "FluidAudio.OfflineVBx@0.17.7", parameters: [:])
+                    let speakerArtifact = output.appendingPathComponent("speaker-timeline.json")
+                    #if os(macOS)
+                    let speakerDecision = IntegratedModuleResumePlanner.plan(expected: speakerFingerprint, status: status.modules["speakerDiarization"], artifactURL: speakerArtifact)
+                    if speakerDecision == .reuse { try record("speakerDiarization", "completed", nil, speakerFingerprint) } else {
+                    try record("speakerDiarization", "running", nil, speakerFingerprint)
                     #if os(macOS)
                     do {
                         _ = try await SpeakerTimelinePipeline(engine: FluidAudioSpeakerEngine()).run(file: file, runDirectory: output)
-                        try record("speakerDiarization", "completed")
+                        try record("speakerDiarization", "completed", nil, speakerFingerprint)
                     } catch { anyFailed = true; try record("speakerDiarization", "failed", String(describing: error)) }
                     #else
                     anyFailed = true; try record("speakerDiarization", "unsupported", "FluidAudio 仅支持 macOS")
                     #endif
+                    }
+                    #else
+                    anyFailed = true; try record("speakerDiarization", "unsupported", "FluidAudio 仅支持 macOS")
+                    #endif
 
-                    try record("speakerAlignment", "running")
+                    let alignmentFingerprint = ResumeFingerprint(sourceSHA256: hash, engine: "temporal_overlap_candidates", parameters: ["transcription": options.parameters["locale"] ?? "zh-CN", "diarization": speakerFingerprint.engine])
+                    let alignmentArtifact = output.appendingPathComponent("speaker-aligned-transcript.json")
                     if status.modules["transcription"]?.state == "completed",
                        status.modules["speakerDiarization"]?.state == "completed" {
-                        do {
-                            _ = try SpeakerTranscriptAlignmentPipeline().run(file: file, runDirectory: output)
-                            try record("speakerAlignment", "completed")
-                        } catch { anyFailed = true; try record("speakerAlignment", "failed", String(describing: error)) }
+                        let decision = IntegratedModuleResumePlanner.plan(expected: alignmentFingerprint, status: status.modules["speakerAlignment"], artifactURL: alignmentArtifact)
+                        if decision == .reuse { try record("speakerAlignment", "completed", nil, alignmentFingerprint) }
+                        else {
+                            try record("speakerAlignment", "running", nil, alignmentFingerprint)
+                            do {
+                                _ = try SpeakerTranscriptAlignmentPipeline().run(file: file, runDirectory: output)
+                                try record("speakerAlignment", "completed", nil, alignmentFingerprint)
+                            } catch { anyFailed = true; try record("speakerAlignment", "failed", String(describing: error), alignmentFingerprint) }
+                        }
                     } else {
                         try record("speakerAlignment", "skipped", "转写或说话人分离未完成")
                     }
@@ -153,18 +187,5 @@ import SoundlogCore
             FileHandle.standardError.write(Data("错误: \(error)\n".utf8)); exit(2)
         }
     }
-}
-
-private struct IntegratedProcessingStatus: Codable {
-    var schemaVersion = 1
-    let sourcePath: String
-    let sourceSHA256: String
-    var updatedAt: String
-    var modules: [String: IntegratedModuleStatus]
-}
-
-private struct IntegratedModuleStatus: Codable {
-    let state: String
-    let error: String?
 }
 
