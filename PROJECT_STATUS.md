@@ -1,6 +1,6 @@
 # soundlog 项目状态
 
-更新日期：2026-11-10。当前阶段：通用转写、环境声事件核心、匿名说话人时间线、候选对齐及FluidAudio v0.17.7离线适配器已实现；新增身份库跨平台数据骨架、整合状态校验与模块断点续跑。Mac历史验证为`swift build`通过、`swift test` 32项通过；本轮Linux在原始Package manifest下`swift build`与`swift test`通过，共44项测试。SwiftPM解析时将FluidAudio 0.17.7及声明的Nemo二进制工件取入忽略目录`.build/`；未下载说话人模型权重、未处理真实录音。
+更新日期：2026-11-10。当前阶段：通用转写、环境声事件核心、匿名说话人时间线、候选对齐及FluidAudio v0.17.7离线适配器已实现；新增身份库跨平台数据骨架、整合状态校验与模块断点续跑。Mac历史验证为`swift build`通过、`swift test` 32项通过；本轮Linux在原始Package manifest下`swift build`与`swift test`通过，共47项测试。SwiftPM解析时将FluidAudio 0.17.7及声明的Nemo二进制工件取入忽略目录`.build/`；未下载说话人模型权重、未处理真实录音。
 
 ## 目标与边界
 
