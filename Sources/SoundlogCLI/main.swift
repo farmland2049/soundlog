@@ -171,13 +171,17 @@ import SoundlogCore
                         return nil
                     })
                     do {
+                        for url in artifactURLs.values where url.lastPathComponent != "processing-status.json" {
+                            status.artifactFingerprints[url.path] = try ArtifactMetadata.fingerprint(url, cached: status.artifactFingerprints[url.path])
+                        }
+                        try AtomicFile.write(try encoder.encode(status), to: statusURL)
                         let memory = ProcessPeakMemory.current()
                         status.record("runManifest", state: "completed", fingerprint: ResumeFingerprint(sourceSHA256: hash, engine: "run-manifest-v1", parameters: [:]))
                         status.modules["runManifest"]?.execution = "recomputed"
                         status.modules["runManifest"]?.wallClockSeconds = Date().timeIntervalSince(processStart)
                         let performance = RunPerformance(wallClockSeconds: Date().timeIntervalSince(processStart), peakMemoryBytes: memory.bytes, peakMemorySource: memory.source, ruMaxRSSUnit: memory.unit, wallClockExcludesManifestWrite: true)
                         let manifestURL = output.appendingPathComponent("run-manifest.json")
-                        try UnifiedOutput.writeManifest(inputPath: file.path, sourceSHA256: hash, duration: duration, coverageRanges: ranges, modules: status.modules, samples: sampleMap, artifactURLs: artifactURLs, baseDirectory: output, to: manifestURL, encoder: encoder, durationMethod: durationInfo.method, durationError: durationInfo.error, performance: performance)
+                        try UnifiedOutput.writeManifest(inputPath: file.path, sourceSHA256: hash, duration: duration, coverageRanges: ranges, modules: status.modules, samples: sampleMap, artifactURLs: artifactURLs, baseDirectory: output, to: manifestURL, cachedFingerprints: status.artifactFingerprints, encoder: encoder, durationMethod: durationInfo.method, durationError: durationInfo.error, performance: performance)
                         status.runWallClockSecondsIncludingManifestWrite = Date().timeIntervalSince(processStart)
                         try AtomicFile.write(try encoder.encode(status), to: statusURL)
                     } catch {

@@ -16,15 +16,61 @@ public struct IntegratedModuleStatus: Codable, Equatable, Sendable {
     }
 }
 
+public struct ArtifactFingerprint: Codable, Equatable, Sendable {
+    public let size: UInt64
+    public let mtimeNanoseconds: Int64
+    public let sha256: String
+    public init(size: UInt64, mtimeNanoseconds: Int64, sha256: String) { self.size = size; self.mtimeNanoseconds = mtimeNanoseconds; self.sha256 = sha256 }
+}
+
+public protocol ArtifactHashing: Sendable { func hash(file url: URL) throws -> String }
+public struct DefaultArtifactHasher: ArtifactHashing {
+    public init() {}
+    public func hash(file url: URL) throws -> String { try SHA256.file(url) }
+}
+
+public enum ArtifactMetadata {
+    public static func read(_ url: URL) throws -> (size: UInt64, mtimeNanoseconds: Int64) {
+        #if canImport(Glibc)
+        var info = Glibc.stat(); guard url.path.withCString({ Glibc.fstatat(AT_FDCWD, $0, &info, 0) }) == 0 else { throw TranscriptionError.io("stat failed: \(errno)") }
+        return (UInt64(info.st_size), Int64(info.st_mtim.tv_sec) * 1_000_000_000 + Int64(info.st_mtim.tv_nsec))
+        #elseif canImport(Darwin)
+        var info = Darwin.stat(); guard url.path.withCString({ Darwin.fstatat(AT_FDCWD, $0, &info, 0) }) == 0 else { throw TranscriptionError.io("stat failed: \(errno)") }
+        return (UInt64(info.st_size), Int64(info.st_mtimespec.tv_sec) * 1_000_000_000 + Int64(info.st_mtimespec.tv_nsec))
+        #else
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        guard let size = values.fileSize, let date = values.contentModificationDate else { throw TranscriptionError.io("metadata unavailable") }
+        return (UInt64(size), Int64(date.timeIntervalSince1970 * 1_000_000_000))
+        #endif
+    }
+    public static func fingerprint(_ url: URL, using hasher: any ArtifactHashing = DefaultArtifactHasher(), cached: ArtifactFingerprint? = nil) throws -> ArtifactFingerprint {
+        let metadata = try read(url)
+        if let cached, cached.size == metadata.size, cached.mtimeNanoseconds == metadata.mtimeNanoseconds { return cached }
+        return ArtifactFingerprint(size: metadata.size, mtimeNanoseconds: metadata.mtimeNanoseconds, sha256: try hasher.hash(file: url))
+    }
+}
+
 public struct IntegratedProcessingStatus: Codable, Equatable, Sendable {
     public var schemaVersion: Int
     public let sourcePath: String
     public let sourceSHA256: String
     public var updatedAt: String
     public var modules: [String: IntegratedModuleStatus]
+    public var artifactFingerprints: [String: ArtifactFingerprint]
     public var runWallClockSecondsIncludingManifestWrite: Double?
-    public init(sourcePath: String, sourceSHA256: String, updatedAt: String = ISO8601DateFormatter().string(from: Date()), modules: [String: IntegratedModuleStatus] = [:]) {
-        schemaVersion = 1; self.sourcePath = sourcePath; self.sourceSHA256 = sourceSHA256; self.updatedAt = updatedAt; self.modules = modules; self.runWallClockSecondsIncludingManifestWrite = nil
+    private enum CodingKeys: String, CodingKey { case schemaVersion, sourcePath, sourceSHA256, updatedAt, modules, artifactFingerprints, runWallClockSecondsIncludingManifestWrite }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try c.decode(Int.self, forKey: .schemaVersion)
+        sourcePath = try c.decode(String.self, forKey: .sourcePath)
+        sourceSHA256 = try c.decode(String.self, forKey: .sourceSHA256)
+        updatedAt = try c.decode(String.self, forKey: .updatedAt)
+        modules = try c.decode([String: IntegratedModuleStatus].self, forKey: .modules)
+        artifactFingerprints = try c.decodeIfPresent([String: ArtifactFingerprint].self, forKey: .artifactFingerprints) ?? [:]
+        runWallClockSecondsIncludingManifestWrite = try c.decodeIfPresent(Double.self, forKey: .runWallClockSecondsIncludingManifestWrite)
+    }
+    public init(sourcePath: String, sourceSHA256: String, updatedAt: String = ISO8601DateFormatter().string(from: Date()), modules: [String: IntegratedModuleStatus] = [:], artifactFingerprints: [String: ArtifactFingerprint] = [:]) {
+        schemaVersion = 1; self.sourcePath = sourcePath; self.sourceSHA256 = sourceSHA256; self.updatedAt = updatedAt; self.modules = modules; self.artifactFingerprints = artifactFingerprints; self.runWallClockSecondsIncludingManifestWrite = nil
     }
     public mutating func record(_ module: String, state: String, error: String? = nil, fingerprint: ResumeFingerprint? = nil) {
         modules[module] = IntegratedModuleStatus(state: state, error: error, fingerprint: fingerprint)
@@ -33,15 +79,16 @@ public struct IntegratedProcessingStatus: Codable, Equatable, Sendable {
 }
 
 public enum IntegratedModuleResumePlanner {
-    public static func plan(expected: ResumeFingerprint, status: IntegratedModuleStatus?, artifactURL: URL) -> ResumeDecision {
+    public static func plan(expected: ResumeFingerprint, status: IntegratedModuleStatus?, artifactURL: URL, cachedFingerprint: ArtifactFingerprint? = nil, hasher: any ArtifactHashing = DefaultArtifactHasher()) -> ResumeDecision {
         guard let status else { return .rerun("无模块记录") }
         guard status.state == "completed" else { return .rerun("模块未完成") }
         guard status.fingerprint == expected else { return .rerun("哈希、参数或引擎指纹变") }
-        guard let data = try? Data(contentsOf: artifactURL), !data.isEmpty,
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        guard let metadata = try? ArtifactMetadata.read(artifactURL), metadata.size > 0,
+              let object = try? StreamingJSONTopLevelFields.read(artifactURL, wanted: ["schemaVersion", "sourceSHA256", "engine", "alignmentMethod", "parameters"]),
               let schemaVersion = object["schemaVersion"] as? Int, schemaVersion > 0,
               let sourceSHA256 = object["sourceSHA256"] as? String,
               sourceSHA256 == expected.sourceSHA256 else { return .rerun("产物缺失、无效或源哈希不符") }
+        guard (try? ArtifactMetadata.fingerprint(artifactURL, using: hasher, cached: cachedFingerprint)) != nil else { return .rerun("产物指纹读取失败") }
         let reportedEngine = (object["engine"] as? String) ?? (object["alignmentMethod"] as? String)
         guard reportedEngine == expected.engine else { return .rerun("产物引擎指纹不符") }
         if let reportedParameters = object["parameters"] as? [String: Any] {
@@ -53,6 +100,118 @@ public enum IntegratedModuleResumePlanner {
             }
         }
         return .reuse
+    }
+}
+
+/// Scans a top-level JSON object without buffering skipped values. Only requested
+/// values are accumulated, so large event/window arrays stay in the 64 KiB reader buffer.
+private enum StreamingJSONTopLevelFields {
+    static func read(_ url: URL, wanted: Set<String>) throws -> [String: Any] {
+        let reader = try JSONByteReader(url)
+        try reader.whitespace(); guard try reader.byte() == 123 else { throw TranscriptionError.io("JSON object expected") }
+        var result: [String: Any] = [:]
+        try reader.whitespace()
+        if try reader.peek() == 125 {
+            _ = try reader.byte(); try reader.whitespace()
+            guard try reader.peek() == nil else { throw TranscriptionError.io("trailing JSON data") }
+            return result
+        }
+        while true {
+            try reader.whitespace(); guard try reader.peek() == 34 else { throw TranscriptionError.io("JSON key expected") }
+            let keyData = try reader.string(capture: true)
+            guard let key = try JSONSerialization.jsonObject(with: keyData, options: [.fragmentsAllowed]) as? String else { throw TranscriptionError.io("invalid JSON key") }
+            try reader.whitespace(); guard try reader.byte() == 58 else { throw TranscriptionError.io("JSON colon expected") }
+            try reader.whitespace()
+            if wanted.contains(key) {
+                let raw = try reader.value(capture: true)
+                result[key] = try JSONSerialization.jsonObject(with: raw, options: [.fragmentsAllowed])
+            } else { _ = try reader.value(capture: false) }
+            try reader.whitespace()
+            let separator = try reader.byte()
+            if separator == 125 { break }
+            guard separator == 44 else { throw TranscriptionError.io("JSON separator expected") }
+        }
+        try reader.whitespace(); guard try reader.peek() == nil else { throw TranscriptionError.io("trailing JSON data") }
+        return result
+    }
+}
+
+private final class JSONByteReader {
+    private let handle: FileHandle
+    private var buffer = Data()
+    private var index = 0
+    init(_ url: URL) throws { handle = try FileHandle(forReadingFrom: url) }
+    deinit { try? handle.close() }
+    func peek() throws -> UInt8? { try fill(); return index < buffer.count ? buffer[index] : nil }
+    func byte(_ capture: inout [UInt8]?) throws -> UInt8 {
+        try fill(); guard index < buffer.count else { throw TranscriptionError.io("truncated JSON") }
+        let value = buffer[index]; index += 1; capture?.append(value); return value
+    }
+    func byte() throws -> UInt8 { var ignored: [UInt8]? = nil; return try byte(&ignored) }
+    private func fill() throws {
+        if index >= buffer.count { buffer = try handle.read(upToCount: 65_536) ?? Data(); index = 0 }
+    }
+    func whitespace() throws { while let c = try peek(), c == 32 || c == 9 || c == 10 || c == 13 { _ = try byte() } }
+    func string(capture: Bool) throws -> Data {
+        var raw: [UInt8]? = capture ? [] : nil
+        guard try byte(&raw) == 34 else { throw TranscriptionError.io("JSON string expected") }
+        var escaped = false
+        while true {
+            let c = try byte(&raw)
+            if escaped { escaped = false; continue }
+            if c == 92 { escaped = true; continue }
+            if c == 34 { break }
+            if c < 0x20 { throw TranscriptionError.io("invalid JSON string") }
+        }
+        return Data(raw ?? [])
+    }
+    func value(capture: Bool) throws -> Data {
+        var raw: [UInt8]? = capture ? [] : nil
+        try scanValue(&raw)
+        return Data(raw ?? [])
+    }
+    private func scanValue(_ raw: inout [UInt8]?) throws {
+        try whitespace()
+        guard let first = try peek() else { throw TranscriptionError.io("truncated JSON value") }
+        if first == 34 { try stringInto(&raw); return }
+        if first == 123 {
+            _ = try byte(&raw); try whitespace()
+            if try peek() == 125 { _ = try byte(&raw); return }
+            while true {
+                guard try peek() == 34 else { throw TranscriptionError.io("JSON object key expected") }
+                try stringInto(&raw); try whitespace()
+                guard try byte(&raw) == 58 else { throw TranscriptionError.io("JSON colon expected") }
+                try scanValue(&raw); try whitespace()
+                let sep = try byte(&raw); if sep == 125 { return }; guard sep == 44 else { throw TranscriptionError.io("JSON object separator expected") }
+                try whitespace()
+            }
+        }
+        if first == 91 {
+            _ = try byte(&raw); try whitespace()
+            if try peek() == 93 { _ = try byte(&raw); return }
+            while true {
+                try scanValue(&raw); try whitespace()
+                let sep = try byte(&raw); if sep == 93 { return }; guard sep == 44 else { throw TranscriptionError.io("JSON array separator expected") }
+                try whitespace()
+            }
+        }
+        var token: [UInt8] = []
+        while let c = try peek(), c != 44, c != 125, c != 93, c != 32, c != 9, c != 10, c != 13 { token.append(try byte(&raw)) }
+        guard !token.isEmpty, (try? JSONSerialization.jsonObject(with: Data(token), options: [.fragmentsAllowed])) != nil else { throw TranscriptionError.io("invalid JSON primitive") }
+    }
+    private func stringInto(_ raw: inout [UInt8]?) throws {
+        guard try byte(&raw) == 34 else { throw TranscriptionError.io("JSON string expected") }
+        var escaped = false
+        while true {
+            let c = try byte(&raw)
+            if escaped {
+                escaped = false
+                if c == 117 { for _ in 0..<4 { let h = try byte(&raw); guard (48...57).contains(h) || (65...70).contains(h) || (97...102).contains(h) else { throw TranscriptionError.io("invalid JSON unicode escape") } } }
+                else if ![34, 92, 47, 98, 102, 110, 114, 116].contains(c) { throw TranscriptionError.io("invalid JSON escape") }
+            } else if c == 92 { escaped = true }
+            else if c == 34 { return }
+            else if c < 0x20 { throw TranscriptionError.io("invalid JSON string") }
+        }
     }
 }
 
@@ -83,8 +242,11 @@ public enum IntegratedModuleExecutor {
         try? AtomicFile.write(try encoder.encode(status), to: statusURL)
     }
     @discardableResult
-    public static func execute(module: String, fingerprint: ResumeFingerprint, artifactURL: URL? = nil, status: inout IntegratedProcessingStatus, statusURL: URL, encoder: JSONEncoder = JSONEncoder(), operation: @Sendable () async throws -> Void) async -> Bool {
-        if let artifactURL, IntegratedModuleResumePlanner.plan(expected: fingerprint, status: status.modules[module], artifactURL: artifactURL) == .reuse {
+    public static func execute(module: String, fingerprint: ResumeFingerprint, artifactURL: URL? = nil, status: inout IntegratedProcessingStatus, statusURL: URL, encoder: JSONEncoder = JSONEncoder(), hasher: any ArtifactHashing = DefaultArtifactHasher(), operation: @Sendable () async throws -> Void) async -> Bool {
+        if let artifactURL, let updated = try? ArtifactMetadata.fingerprint(artifactURL, using: hasher, cached: status.artifactFingerprints[artifactURL.path]) {
+            status.artifactFingerprints[artifactURL.path] = updated
+        }
+        if let artifactURL, IntegratedModuleResumePlanner.plan(expected: fingerprint, status: status.modules[module], artifactURL: artifactURL, cachedFingerprint: status.artifactFingerprints[artifactURL.path], hasher: hasher) == .reuse {
             status.modules[module]?.execution = "reuse"
             status.modules[module]?.wallClockSeconds = 0
             try? AtomicFile.write(try encoder.encode(status), to: statusURL)
@@ -100,6 +262,7 @@ public enum IntegratedModuleExecutor {
         }
         do {
             try await operation()
+            if let artifactURL { status.artifactFingerprints[artifactURL.path] = try ArtifactMetadata.fingerprint(artifactURL, using: hasher) }
             let elapsed = Date().timeIntervalSince(started)
             status.record(module, state: "completed", fingerprint: fingerprint)
             status.modules[module]?.execution = "recomputed"
@@ -421,7 +584,7 @@ public enum UnifiedOutput {
         return ResultSamples(first: start, middle: Array(entries[middleStart..<(middleStart + n)]), last: end)
     }
 
-    public static func buildManifest(inputPath: String, sourceSHA256: String, duration: Double?, coverageRanges: [AudioTimeRange], modules: [String: IntegratedModuleStatus], samples: [String: [String]], artifactURLs: [String: URL], baseDirectory: URL, generatedAt: String = ISO8601DateFormatter().string(from: Date()), durationMethod: String = "unknown", durationError: String? = nil, performance: RunPerformance = RunPerformance(wallClockSeconds: 0, peakMemoryBytes: 0, peakMemorySource: "unavailable", ruMaxRSSUnit: "bytes")) throws -> RunManifest {
+    public static func buildManifest(inputPath: String, sourceSHA256: String, duration: Double?, coverageRanges: [AudioTimeRange], modules: [String: IntegratedModuleStatus], samples: [String: [String]], artifactURLs: [String: URL], baseDirectory: URL, cachedFingerprints: [String: ArtifactFingerprint] = [:], hasher: any ArtifactHashing = DefaultArtifactHasher(), generatedAt: String = ISO8601DateFormatter().string(from: Date()), durationMethod: String = "unknown", durationError: String? = nil, performance: RunPerformance = RunPerformance(wallClockSeconds: 0, peakMemoryBytes: 0, peakMemorySource: "unavailable", ruMaxRSSUnit: "bytes")) throws -> RunManifest {
         var artifacts: [String: ArtifactRecord] = [:]
         var registeredPaths = Set<String>()
         let statusPath = baseDirectory.appendingPathComponent("processing-status.json").standardizedFileURL.path
@@ -429,7 +592,7 @@ public enum UnifiedOutput {
             let canonicalPath = url.standardizedFileURL.path
             guard canonicalPath != statusPath, registeredPaths.insert(canonicalPath).inserted else { continue }
             let relative = String(url.path.dropFirst(baseDirectory.path.hasSuffix("/") ? baseDirectory.path.count : baseDirectory.path.count + 1))
-            artifacts[name] = ArtifactRecord(path: relative, sha256: try SHA256.file(url))
+            artifacts[name] = ArtifactRecord(path: relative, sha256: try ArtifactMetadata.fingerprint(url, using: hasher, cached: cachedFingerprints[url.path]) .sha256)
         }
         return RunManifest(schemaVersion: 1, generatedAt: generatedAt, inputPath: inputPath, sourceSHA256: sourceSHA256, audioDurationSeconds: duration, durationMethod: durationMethod, durationError: durationError, performance: performance,
             coverage: try duration.map { try coverageReport(ranges: coverageRanges, duration: $0) }, modules: modules,
@@ -438,8 +601,8 @@ public enum UnifiedOutput {
 
     /// Builds and durably writes the manifest. Mutable processing status is excluded from its artifact hashes.
     @discardableResult
-    public static func writeManifest(inputPath: String, sourceSHA256: String, duration: Double?, coverageRanges: [AudioTimeRange], modules: [String: IntegratedModuleStatus], samples: [String: [String]], artifactURLs: [String: URL], baseDirectory: URL, to manifestURL: URL, encoder: JSONEncoder = JSONEncoder(), generatedAt: String = ISO8601DateFormatter().string(from: Date()), durationMethod: String = "unknown", durationError: String? = nil, performance: RunPerformance = RunPerformance(wallClockSeconds: 0, peakMemoryBytes: 0, peakMemorySource: "unavailable", ruMaxRSSUnit: "bytes")) throws -> RunManifest {
-        let manifest = try buildManifest(inputPath: inputPath, sourceSHA256: sourceSHA256, duration: duration, coverageRanges: coverageRanges, modules: modules, samples: samples, artifactURLs: artifactURLs, baseDirectory: baseDirectory, generatedAt: generatedAt, durationMethod: durationMethod, durationError: durationError, performance: performance)
+    public static func writeManifest(inputPath: String, sourceSHA256: String, duration: Double?, coverageRanges: [AudioTimeRange], modules: [String: IntegratedModuleStatus], samples: [String: [String]], artifactURLs: [String: URL], baseDirectory: URL, to manifestURL: URL, cachedFingerprints: [String: ArtifactFingerprint] = [:], hasher: any ArtifactHashing = DefaultArtifactHasher(), encoder: JSONEncoder = JSONEncoder(), generatedAt: String = ISO8601DateFormatter().string(from: Date()), durationMethod: String = "unknown", durationError: String? = nil, performance: RunPerformance = RunPerformance(wallClockSeconds: 0, peakMemoryBytes: 0, peakMemorySource: "unavailable", ruMaxRSSUnit: "bytes")) throws -> RunManifest {
+        let manifest = try buildManifest(inputPath: inputPath, sourceSHA256: sourceSHA256, duration: duration, coverageRanges: coverageRanges, modules: modules, samples: samples, artifactURLs: artifactURLs, baseDirectory: baseDirectory, cachedFingerprints: cachedFingerprints, hasher: hasher, generatedAt: generatedAt, durationMethod: durationMethod, durationError: durationError, performance: performance)
         try AtomicFile.write(try encoder.encode(manifest), to: manifestURL)
         return manifest
     }

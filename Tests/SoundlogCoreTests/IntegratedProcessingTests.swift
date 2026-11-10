@@ -2,6 +2,10 @@ import XCTest
 @testable import SoundlogCore
 
 private final class ExecutorCallCounter: @unchecked Sendable { var value = 0 }
+private final class CountingArtifactHasher: ArtifactHashing, @unchecked Sendable {
+    let calls = ExecutorCallCounter()
+    func hash(file url: URL) throws -> String { calls.value += 1; return try SHA256.file(url) }
+}
 
 final class IntegratedProcessingTests: XCTestCase {
     func testExecutorRecomputesReusesAndInvalidatesThroughRealOperations() async throws {
@@ -108,6 +112,62 @@ final class IntegratedProcessingTests: XCTestCase {
         XCTAssertNotEqual(IntegratedModuleResumePlanner.plan(expected: .init(sourceSHA256: "other", engine: "engine-v1", parameters: ["threshold": "0.3"]), status: completed, artifactURL: file), .reuse)
         XCTAssertNotEqual(IntegratedModuleResumePlanner.plan(expected: .init(sourceSHA256: "hash", engine: "engine-v1", parameters: ["threshold": "0.4"]), status: completed, artifactURL: file), .reuse)
     }
+
+    func testArtifactHashCacheReusesAndInvalidatesByNanosecondMetadata() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let artifact = root.appendingPathComponent("raw.json"), statusURL = root.appendingPathComponent("processing-status.json")
+        let fp = ResumeFingerprint(sourceSHA256: "hash", engine: "fake", parameters: [:])
+        let hasher = CountingArtifactHasher(); var status = IntegratedProcessingStatus(sourcePath: "synthetic", sourceSHA256: "hash")
+        let operation: @Sendable () async throws -> Void = { try Data("{\"schemaVersion\":1,\"sourceSHA256\":\"hash\",\"engine\":\"fake\",\"parameters\":{}}".utf8).write(to: artifact) }
+        let didRun = await IntegratedModuleExecutor.execute(module: "m", fingerprint: fp, artifactURL: artifact, status: &status, statusURL: statusURL, hasher: hasher, operation: operation)
+        XCTAssertTrue(didRun)
+        let firstCount = hasher.calls.value
+        XCTAssertGreaterThan(firstCount, 0)
+        let reused = await IntegratedModuleExecutor.execute(module: "m", fingerprint: fp, artifactURL: artifact, status: &status, statusURL: statusURL, hasher: hasher, operation: operation)
+        XCTAssertTrue(reused)
+        XCTAssertEqual(hasher.calls.value, firstCount)
+        let oldDate = Date(timeIntervalSince1970: 1_700_000_000.123456)
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: artifact.path)
+        let changed = Data("{\"schemaVersion\":1,\"sourceSHA256\":\"hash\",\"engine\":\"fakx\",\"parameters\":{}}".utf8)
+        try changed.write(to: artifact)
+        try FileManager.default.setAttributes([.modificationDate: oldDate.addingTimeInterval(2)], ofItemAtPath: artifact.path)
+        _ = await IntegratedModuleExecutor.execute(module: "m", fingerprint: fp, artifactURL: artifact, status: &status, statusURL: statusURL, hasher: hasher, operation: operation)
+        XCTAssertGreaterThan(hasher.calls.value, firstCount)
+    }
+
+    func testStreamingResumeSkipsMultiMegabyteWindowsBeforeMetadata() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let handle = try FileHandle(forWritingTo: createEmpty(file))
+        try handle.write(contentsOf: Data("{\"windows\":[".utf8))
+        let row = Data("{\"candidates\":[\"animal\",\"speech\",\"music\"]},".utf8)
+        for i in 0..<80_000 { if i == 79_999 { try handle.write(contentsOf: Data(row.dropLast())) } else { try handle.write(contentsOf: row) } }
+        try handle.write(contentsOf: Data("],\"schemaVersion\":1,\"sourceSHA256\":\"hash\",\"engine\":\"engine-v1\",\"parameters\":{}}".utf8)); try handle.close()
+        let fp = ResumeFingerprint(sourceSHA256: "hash", engine: "engine-v1", parameters: [:])
+        let status = IntegratedModuleStatus(state: "completed", fingerprint: fp)
+        let start = Date()
+        XCTAssertEqual(IntegratedModuleResumePlanner.plan(expected: fp, status: status, artifactURL: file), .reuse)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 10)
+    }
+
+    func testTruncationWithForgedUnchangedModificationTimeCannotReuse() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let fp = ResumeFingerprint(sourceSHA256: "hash", engine: "engine-v1", parameters: [:])
+        let bytes = Data("{\"schemaVersion\":1,\"sourceSHA256\":\"hash\",\"engine\":\"engine-v1\",\"parameters\":{}}".utf8)
+        try bytes.write(to: file)
+        let fixedDate = Date(timeIntervalSince1970: 1_700_000_000.123456)
+        try FileManager.default.setAttributes([.modificationDate: fixedDate], ofItemAtPath: file.path)
+        let cached = try ArtifactMetadata.fingerprint(file)
+        try Data(bytes.prefix(bytes.count - 12)).write(to: file)
+        try FileManager.default.setAttributes([.modificationDate: fixedDate], ofItemAtPath: file.path)
+        let status = IntegratedModuleStatus(state: "completed", fingerprint: fp)
+        XCTAssertNotEqual(IntegratedModuleResumePlanner.plan(expected: fp, status: status, artifactURL: file, cachedFingerprint: cached), .reuse)
+    }
+
+    private func createEmpty(_ url: URL) throws -> URL { _ = FileManager.default.createFile(atPath: url.path, contents: Data()); return url }
 
     func testCandidateTranscriptShowsUnmatchedAndAllAnonymousCandidates() {
         let entries = [
