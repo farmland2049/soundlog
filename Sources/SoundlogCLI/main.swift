@@ -68,7 +68,11 @@ import SoundlogCore
 
                     let soundFingerprint = ResumeFingerprint(sourceSHA256: hash, engine: "apple-sound-analysis-version1", parameters: ["confidenceThreshold": String(diarizationParameters.confidenceThreshold), "minimumEventDurationSeconds": String(diarizationParameters.minimumEventDurationSeconds), "mergeGapSeconds": String(diarizationParameters.mergeGapSeconds)])
                     let soundArtifact = output.appendingPathComponent("sound-events.json")
+                    let soundWindowsArtifact = output.appendingPathComponent("sound-event-windows.ndjson")
                     #if canImport(SoundAnalysis) && canImport(AVFoundation)
+                    // Legacy runs embedded candidates in the summary and have no sidecar.
+                    // They are intentionally recomputed once into the new two-file format.
+                    if !FileManager.default.fileExists(atPath: soundWindowsArtifact.path) { status.modules["soundEvents"] = nil }
                     let soundCompleted = await IntegratedModuleExecutor.execute(module: "soundEvents", fingerprint: soundFingerprint, artifactURL: soundArtifact, status: &status, statusURL: statusURL, encoder: encoder) {
                         _ = try await SoundEventPipeline(engine: AppleSoundEventEngine()).run(file: file, runDirectory: output, parameters: diarizationParameters)
                     }
@@ -131,6 +135,7 @@ import SoundlogCore
                         let url = output.appendingPathComponent(name)
                         if FileManager.default.fileExists(atPath: url.path) { artifactURLs[name] = url }
                     }
+                    if FileManager.default.fileExists(atPath: soundWindowsArtifact.path) { artifactURLs["sound-event-windows"] = soundWindowsArtifact }
                     for name in ["speaker-aligned-transcript.md", "status.json"] {
                         let url = output.appendingPathComponent(name)
                         if FileManager.default.fileExists(atPath: url.path) { artifactURLs[name] = url }
@@ -147,7 +152,7 @@ import SoundlogCore
                         status.modules["inputCoverage"]?.wallClockSeconds = Date().timeIntervalSince(coverageStarted)
                         try AtomicFile.write(try encoder.encode(status), to: statusURL)
                     }
-                    let sampleMap = Dictionary(uniqueKeysWithValues: artifactURLs.compactMap { key, url -> (String, [String])? in
+                    var sampleMap = Dictionary(uniqueKeysWithValues: artifactURLs.compactMap { key, url -> (String, [String])? in
                         guard let data = try? Data(contentsOf: url) else { return nil }
                         if key == "transcription-raw", let raw = try? JSONDecoder().decode(RawTranscription.self, from: data) {
                             return (key, raw.segments.map { "\($0.startOffsetSeconds)-\($0.endOffsetSeconds): \($0.text)" })
@@ -170,6 +175,21 @@ import SoundlogCore
                         }
                         return nil
                     })
+                    let soundSummaryURL = output.appendingPathComponent("sound-events.json")
+                    let soundWindowsURL = output.appendingPathComponent("sound-event-windows.ndjson")
+                    if let data = try? Data(contentsOf: soundSummaryURL),
+                       let summary = try? JSONDecoder().decode(SoundEventsDocument.self, from: data), summary.windowCount > 0,
+                       FileManager.default.fileExists(atPath: soundWindowsURL.path) {
+                        let n = min(3, summary.windowCount), middleStart = max(0, (summary.windowCount - n) / 2)
+                        let indices = Set(Array(0..<n) + Array(middleStart..<(middleStart + n)) + Array((summary.windowCount - n)..<summary.windowCount))
+                        if let windows = try? SoundEventWindowReader.windows(at: indices, from: soundWindowsURL) {
+                            sampleMap["sound-event-window-samples"] = indices.sorted().compactMap { index in
+                                guard let window = windows[index] else { return nil }
+                                let candidates = window.candidates.map { "\($0.category)=\($0.confidence)" }.joined(separator: ",")
+                                return "\(index):\(window.startOffsetSeconds)-\(window.endOffsetSeconds):\(candidates)"
+                            }
+                        }
+                    }
                     do {
                         for url in artifactURLs.values where url.lastPathComponent != "processing-status.json" {
                             status.artifactFingerprints[url.path] = try ArtifactMetadata.fingerprint(url, cached: status.artifactFingerprints[url.path])

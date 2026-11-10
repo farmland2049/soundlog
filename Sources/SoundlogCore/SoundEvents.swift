@@ -60,10 +60,44 @@ public struct SoundEventsDocument: Codable, Equatable, Sendable {
     public let recordingStartLocal: String
     public let engine: String
     public let parameters: SoundEventParameters
+    /// In-memory classifications from the current execution; omitted from the summary JSON.
     public let windows: [SoundClassificationWindow]
+    public let windowCount: Int
+    public let windowCandidatesFile: String
     public let events: [SoundEvent]
     public let windowBoundaryCaveat: String
     public let inferenceBoundary: String
+
+    private enum CodingKeys: String, CodingKey { case schemaVersion, sourcePath, sourceSHA256, recordingStartLocal, engine, parameters, windowCount, windowCandidatesFile, events, windowBoundaryCaveat, inferenceBoundary, windows }
+    public init(schemaVersion: Int, sourcePath: String, sourceSHA256: String, recordingStartLocal: String, engine: String, parameters: SoundEventParameters, windows: [SoundClassificationWindow], windowCount: Int, windowCandidatesFile: String, events: [SoundEvent], windowBoundaryCaveat: String, inferenceBoundary: String) {
+        self.schemaVersion = schemaVersion; self.sourcePath = sourcePath; self.sourceSHA256 = sourceSHA256; self.recordingStartLocal = recordingStartLocal
+        self.engine = engine; self.parameters = parameters; self.windows = windows; self.windowCount = windowCount; self.windowCandidatesFile = windowCandidatesFile
+        self.events = events; self.windowBoundaryCaveat = windowBoundaryCaveat; self.inferenceBoundary = inferenceBoundary
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try c.decode(Int.self, forKey: .schemaVersion)
+        sourcePath = try c.decode(String.self, forKey: .sourcePath)
+        sourceSHA256 = try c.decode(String.self, forKey: .sourceSHA256)
+        recordingStartLocal = try c.decode(String.self, forKey: .recordingStartLocal)
+        engine = try c.decode(String.self, forKey: .engine)
+        parameters = try c.decode(SoundEventParameters.self, forKey: .parameters)
+        windows = try c.decodeIfPresent([SoundClassificationWindow].self, forKey: .windows) ?? []
+        windowCount = try c.decodeIfPresent(Int.self, forKey: .windowCount) ?? windows.count
+        windowCandidatesFile = try c.decodeIfPresent(String.self, forKey: .windowCandidatesFile) ?? ""
+        events = try c.decode([SoundEvent].self, forKey: .events)
+        windowBoundaryCaveat = try c.decode(String.self, forKey: .windowBoundaryCaveat)
+        inferenceBoundary = try c.decode(String.self, forKey: .inferenceBoundary)
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(schemaVersion, forKey: .schemaVersion); try c.encode(sourcePath, forKey: .sourcePath)
+        try c.encode(sourceSHA256, forKey: .sourceSHA256); try c.encode(recordingStartLocal, forKey: .recordingStartLocal)
+        try c.encode(engine, forKey: .engine); try c.encode(parameters, forKey: .parameters)
+        try c.encode(windowCount, forKey: .windowCount); try c.encode(windowCandidatesFile, forKey: .windowCandidatesFile)
+        try c.encode(events, forKey: .events); try c.encode(windowBoundaryCaveat, forKey: .windowBoundaryCaveat)
+        try c.encode(inferenceBoundary, forKey: .inferenceBoundary)
+    }
 }
 
 public enum SoundEventBuilder {
@@ -107,6 +141,26 @@ public enum SoundEventBuilder {
 }
 
 public struct SoundEventEngineResult: Sendable { public let windows: [SoundClassificationWindow]; public init(windows: [SoundClassificationWindow]) { self.windows = windows } }
+public enum SoundEventWindowReader {
+    /// Reads only requested NDJSON lines, buffering at most one line and one 64 KiB chunk.
+    public static func windows(at requested: Set<Int>, from url: URL) throws -> [Int: SoundClassificationWindow] {
+        guard !requested.isEmpty, requested.allSatisfy({ $0 >= 0 }) else { return [:] }
+        let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }
+        var index = 0, line = Data(), result: [Int: SoundClassificationWindow] = [:]
+        while let chunk = try handle.read(upToCount: 65_536), !chunk.isEmpty {
+            for byte in chunk {
+                if byte == 10 {
+                    if requested.contains(index) { result[index] = try JSONDecoder().decode(SoundClassificationWindow.self, from: line) }
+                    index += 1; line.removeAll(keepingCapacity: true)
+                } else { line.append(byte) }
+            }
+        }
+        if !line.isEmpty, requested.contains(index) { result[index] = try JSONDecoder().decode(SoundClassificationWindow.self, from: line) }
+        guard result.count == requested.count else { throw TranscriptionError.io("sound-event-windows.ndjson 索引不存在") }
+        return result
+    }
+}
+
 public protocol SoundEventEngine: Sendable { var identifier: String { get }; func classify(file: URL) async throws -> SoundEventEngineResult }
 
 public struct SoundEventPipeline: Sendable {
@@ -122,9 +176,16 @@ public struct SoundEventPipeline: Sendable {
         }
         let document = SoundEventsDocument(schemaVersion: 1, sourcePath: file.path, sourceSHA256: try SHA256.file(file),
             recordingStartLocal: try start.timestamp(atOffsetSeconds: 0), engine: engine.identifier, parameters: parameters,
-            windows: windows, events: try SoundEventBuilder.events(windows: windows, parameters: parameters, recordingStart: start),
+            windows: windows, windowCount: windows.count, windowCandidatesFile: "sound-event-windows.ndjson", events: try SoundEventBuilder.events(windows: windows, parameters: parameters, recordingStart: start),
             windowBoundaryCaveat: "分类窗口边界不等于真实事件的精确起止时间。", inferenceBoundary: "候选不自动确认地点、活动或声音来自现场还是外放。")
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let windowEncoder = JSONEncoder(); windowEncoder.outputFormatting = [.sortedKeys]
+        try AtomicFile.writeStreaming(to: runDirectory.appendingPathComponent("sound-event-windows.ndjson")) { handle in
+            for window in windows {
+                try handle.write(contentsOf: windowEncoder.encode(window))
+                try handle.write(contentsOf: Data([10]))
+            }
+        }
         try AtomicFile.write(try encoder.encode(document), to: runDirectory.appendingPathComponent("sound-events.json"))
         return document
     }

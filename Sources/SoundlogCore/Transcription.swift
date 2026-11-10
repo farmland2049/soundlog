@@ -163,6 +163,18 @@ public enum AtomicFile {
         do { try data.write(to: temporary, options: .withoutOverwriting); if rename(temporary.path, destination.path) != 0 { throw TranscriptionError.io("无法原子替换 \(destination.path)") } }
         catch { try? fm.removeItem(at: temporary); throw error }
     }
+    public static func writeStreaming(to destination: URL, _ body: (FileHandle) throws -> Void) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let temporary = destination.deletingLastPathComponent().appendingPathComponent(".\(destination.lastPathComponent).\(UUID().uuidString).tmp")
+        guard fm.createFile(atPath: temporary.path, contents: nil) else { throw TranscriptionError.io("无法创建临时文件 \(temporary.path)") }
+        do {
+            let handle = try FileHandle(forWritingTo: temporary)
+            do { try body(handle); try handle.synchronize(); try handle.close() }
+            catch { try? handle.close(); throw error }
+            if rename(temporary.path, destination.path) != 0 { throw TranscriptionError.io("无法原子替换 \(destination.path)，errno \(errno)") }
+        } catch { try? fm.removeItem(at: temporary); throw error }
+    }
 }
 
 public struct TranscriptionPipeline: Sendable {

@@ -90,6 +90,24 @@ final class SoundEventTests: XCTestCase {
         XCTAssertTrue(doc.windowBoundaryCaveat.contains("不等于"))
     }
 
+    func testPipelineSplitsCandidatesIntoIndexedNDJSON() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("20240229235959.wav"); try Data("fixture".utf8).write(to: file)
+        let output = dir.appendingPathComponent("run", isDirectory: true)
+        let windows = [window(0, 0.4, "rain", 0.87654321), window(0.4, 0.8, "bird", 0.73456789)]
+        let doc = try await SoundEventPipeline(engine: SyntheticSoundEngine(windows: windows)).run(file: file, runDirectory: output, parameters: parameters)
+        let summaryData = try Data(contentsOf: output.appendingPathComponent("sound-events.json"))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: summaryData) as? [String: Any])
+        XCTAssertNil(object["windows"])
+        XCTAssertEqual(object["windowCount"] as? Int, 2)
+        XCTAssertEqual(doc.windowCandidatesFile, "sound-event-windows.ndjson")
+        let resolved = try SoundEventWindowReader.windows(at: [1], from: output.appendingPathComponent(doc.windowCandidatesFile))
+        XCTAssertEqual(resolved[1]?.candidates[0].confidence, 0.73456789)
+        XCTAssertEqual(resolved[1]?.candidates[0].category, "bird")
+    }
+
     private func window(_ a: Double, _ b: Double, _ category: String, _ confidence: Double) -> SoundClassificationWindow {
         SoundClassificationWindow(start: a, end: b, candidates: [.init(category: category, confidence: confidence)])
     }
