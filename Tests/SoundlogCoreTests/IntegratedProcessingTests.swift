@@ -28,6 +28,9 @@ final class IntegratedProcessingTests: XCTestCase {
         XCTAssertEqual(calls.value, 1)
         XCTAssertEqual(status.modules["transcription"]?.execution, "recomputed")
         XCTAssertNotNil(status.modules["transcription"]?.wallClockSeconds)
+        XCTAssertGreaterThan(status.modules["transcription"]?.residentBytesBefore ?? 0, 0)
+        XCTAssertGreaterThan(status.modules["transcription"]?.residentBytesAfter ?? 0, 0)
+        XCTAssertGreaterThan(status.modules["transcription"]?.processPeakResidentBytes ?? 0, 0)
 
         let reused = await IntegratedModuleExecutor.execute(module: "transcription", fingerprint: first, artifactURL: artifact, status: &status, statusURL: statusURL, operation: operation(first))
         XCTAssertTrue(reused)

@@ -11,8 +11,12 @@ public struct IntegratedModuleStatus: Codable, Equatable, Sendable {
     public var fingerprint: ResumeFingerprint?
     public var wallClockSeconds: Double?
     public var execution: String?
-    public init(state: String, error: String? = nil, fingerprint: ResumeFingerprint? = nil, wallClockSeconds: Double? = nil, execution: String? = nil) {
+    public var residentBytesBefore: UInt64?
+    public var residentBytesAfter: UInt64?
+    public var processPeakResidentBytes: UInt64?
+    public init(state: String, error: String? = nil, fingerprint: ResumeFingerprint? = nil, wallClockSeconds: Double? = nil, execution: String? = nil, residentBytesBefore: UInt64? = nil, residentBytesAfter: UInt64? = nil, processPeakResidentBytes: UInt64? = nil) {
         self.state = state; self.error = error; self.fingerprint = fingerprint; self.wallClockSeconds = wallClockSeconds; self.execution = execution
+        self.residentBytesBefore = residentBytesBefore; self.residentBytesAfter = residentBytesAfter; self.processPeakResidentBytes = processPeakResidentBytes
     }
 }
 
@@ -253,7 +257,10 @@ public enum IntegratedModuleExecutor {
             return true
         }
         let started = Date()
+        let residentBefore = ProcessResidentMemory.current()
         status.record(module, state: "running", fingerprint: fingerprint)
+        status.modules[module]?.residentBytesBefore = residentBefore
+        status.modules[module]?.processPeakResidentBytes = ProcessPeakMemory.current().bytes
         do { try AtomicFile.write(try encoder.encode(status), to: statusURL) }
         catch {
             status.record(module, state: "failed", error: String(describing: error), fingerprint: fingerprint)
@@ -267,12 +274,18 @@ public enum IntegratedModuleExecutor {
             status.record(module, state: "completed", fingerprint: fingerprint)
             status.modules[module]?.execution = "recomputed"
             status.modules[module]?.wallClockSeconds = elapsed
+            status.modules[module]?.residentBytesBefore = residentBefore
+            status.modules[module]?.residentBytesAfter = ProcessResidentMemory.current()
+            status.modules[module]?.processPeakResidentBytes = ProcessPeakMemory.current().bytes
             try AtomicFile.write(try encoder.encode(status), to: statusURL)
             return true
         } catch {
             status.record(module, state: "failed", error: failureDescription(error), fingerprint: fingerprint)
             status.modules[module]?.execution = "recomputed"
             status.modules[module]?.wallClockSeconds = Date().timeIntervalSince(started)
+            status.modules[module]?.residentBytesBefore = residentBefore
+            status.modules[module]?.residentBytesAfter = ProcessResidentMemory.current()
+            status.modules[module]?.processPeakResidentBytes = ProcessPeakMemory.current().bytes
             try? AtomicFile.write(try encoder.encode(status), to: statusURL)
             return false
         }
@@ -281,6 +294,29 @@ public enum IntegratedModuleExecutor {
         let nsError = error as NSError
         if nsError.domain == NSPOSIXErrorDomain && nsError.code == 28 { return "磁盘空间不足 (ENOSPC, errno 28)" }
         return String(describing: error)
+    }
+}
+
+public enum ProcessResidentMemory {
+    public static func current() -> UInt64 {
+        #if os(Linux)
+        guard let text = try? String(contentsOfFile: "/proc/self/statm", encoding: .utf8) else { return 0 }
+        let fields = text.split(whereSeparator: { $0.isWhitespace })
+        guard fields.count > 1, let residentPages = UInt64(fields[1]) else { return 0 }
+        let pageSize = sysconf(Int32(_SC_PAGESIZE))
+        return pageSize > 0 ? residentPages * UInt64(pageSize) : 0
+        #elseif os(macOS)
+        var info = mach_task_basic_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        return result == KERN_SUCCESS ? UInt64(info.resident_size) : 0
+        #else
+        return 0
+        #endif
     }
 }
 
