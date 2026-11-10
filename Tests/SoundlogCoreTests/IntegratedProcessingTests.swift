@@ -99,6 +99,8 @@ final class IntegratedProcessingTests: XCTestCase {
 
         let onDisk = try JSONDecoder().decode(RunManifest.self, from: Data(contentsOf: manifestURL))
         XCTAssertEqual(onDisk, manifest)
+        XCTAssertEqual(onDisk.artifacts.count, 1)
+        XCTAssertEqual(onDisk.artifacts["sample"]?.path, "sample.json")
         XCTAssertFalse(onDisk.artifacts.values.contains { $0.path == "processing-status.json" })
         XCTAssertEqual(Set(onDisk.artifacts.values.map(\.path)).count, onDisk.artifacts.count)
         for record in onDisk.artifacts.values {
