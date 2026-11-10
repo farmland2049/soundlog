@@ -164,12 +164,24 @@ public enum UnifiedOutput {
 
     public static func buildManifest(inputPath: String, sourceSHA256: String, duration: Double?, coverageRanges: [AudioTimeRange], modules: [String: IntegratedModuleStatus], samples: [String: [String]], artifactURLs: [String: URL], baseDirectory: URL, generatedAt: String = ISO8601DateFormatter().string(from: Date())) throws -> RunManifest {
         var artifacts: [String: ArtifactRecord] = [:]
+        var registeredPaths = Set<String>()
+        let statusPath = baseDirectory.appendingPathComponent("processing-status.json").standardizedFileURL.path
         for (name, url) in artifactURLs.sorted(by: { $0.key < $1.key }) where FileManager.default.fileExists(atPath: url.path) {
+            let canonicalPath = url.standardizedFileURL.path
+            guard canonicalPath != statusPath, registeredPaths.insert(canonicalPath).inserted else { continue }
             let relative = String(url.path.dropFirst(baseDirectory.path.hasSuffix("/") ? baseDirectory.path.count : baseDirectory.path.count + 1))
             artifacts[name] = ArtifactRecord(path: relative, sha256: try SHA256.file(url))
         }
         return RunManifest(schemaVersion: 1, generatedAt: generatedAt, inputPath: inputPath, sourceSHA256: sourceSHA256, audioDurationSeconds: duration,
             coverage: try duration.map { try coverageReport(ranges: coverageRanges, duration: $0) }, modules: modules,
             artifacts: artifacts, samples: samples.mapValues { self.samples($0) })
+    }
+
+    /// Builds and durably writes the manifest. Mutable processing status is excluded from its artifact hashes.
+    @discardableResult
+    public static func writeManifest(inputPath: String, sourceSHA256: String, duration: Double?, coverageRanges: [AudioTimeRange], modules: [String: IntegratedModuleStatus], samples: [String: [String]], artifactURLs: [String: URL], baseDirectory: URL, to manifestURL: URL, encoder: JSONEncoder = JSONEncoder(), generatedAt: String = ISO8601DateFormatter().string(from: Date())) throws -> RunManifest {
+        let manifest = try buildManifest(inputPath: inputPath, sourceSHA256: sourceSHA256, duration: duration, coverageRanges: coverageRanges, modules: modules, samples: samples, artifactURLs: artifactURLs, baseDirectory: baseDirectory, generatedAt: generatedAt)
+        try AtomicFile.write(try encoder.encode(manifest), to: manifestURL)
+        return manifest
     }
 }

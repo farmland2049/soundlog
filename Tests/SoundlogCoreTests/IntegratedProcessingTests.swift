@@ -76,6 +76,37 @@ final class IntegratedProcessingTests: XCTestCase {
         XCTAssertEqual(manifest.samples["sample"]?.first, ["a", "b"])
     }
 
+    func testWrittenManifestHashesMatchFinalArtifactsAndExcludeMutableStatus() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let statusURL = root.appendingPathComponent("processing-status.json")
+        let artifactURL = root.appendingPathComponent("sample.json")
+        let manifestURL = root.appendingPathComponent("run-manifest.json")
+        try Data("initial status".utf8).write(to: statusURL)
+        try Data("final artifact".utf8).write(to: artifactURL)
+
+        let manifest = try UnifiedOutput.writeManifest(
+            inputPath: "synthetic.wav", sourceSHA256: "source", duration: nil, coverageRanges: [],
+            modules: [:], samples: [:],
+            artifactURLs: ["sample": artifactURL, "sample-alias": artifactURL, "processing-status": statusURL],
+            baseDirectory: root, to: manifestURL, generatedAt: "fixed")
+
+        // This is the CLI's post-write completed record; changing it must not stale any listed hash.
+        var status = IntegratedProcessingStatus(sourcePath: "synthetic.wav", sourceSHA256: "source")
+        status.record("runManifest", state: "completed")
+        try AtomicFile.write(try JSONEncoder().encode(status), to: statusURL)
+
+        let onDisk = try JSONDecoder().decode(RunManifest.self, from: Data(contentsOf: manifestURL))
+        XCTAssertEqual(onDisk, manifest)
+        XCTAssertFalse(onDisk.artifacts.values.contains { $0.path == "processing-status.json" })
+        XCTAssertEqual(Set(onDisk.artifacts.values.map(\.path)).count, onDisk.artifacts.count)
+        for record in onDisk.artifacts.values {
+            let artifact = root.appendingPathComponent(record.path)
+            XCTAssertEqual(try SHA256.file(artifact), record.sha256, "hash mismatch for \(record.path)")
+        }
+    }
+
     func testFailedAtomicWriteLeavesNoTemporaryArtifact() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

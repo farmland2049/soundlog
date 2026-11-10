@@ -150,7 +150,7 @@ import SoundlogCore
                         let url = output.appendingPathComponent(name)
                         if FileManager.default.fileExists(atPath: url.path) { artifactURLs[name] = url }
                     }
-                    for name in ["speaker-aligned-transcript.md", "status.json", "processing-status.json"] {
+                    for name in ["speaker-aligned-transcript.md", "status.json"] {
                         let url = output.appendingPathComponent(name)
                         if FileManager.default.fileExists(atPath: url.path) { artifactURLs[name] = url }
                     }
@@ -180,10 +180,8 @@ import SoundlogCore
                         }
                         return nil
                     })
-                    if FileManager.default.fileExists(atPath: statusURL.path) { artifactURLs["processing-status"] = statusURL }
                     do {
-                        let manifest = try UnifiedOutput.buildManifest(inputPath: file.path, sourceSHA256: hash, duration: duration, coverageRanges: ranges, modules: status.modules, samples: sampleMap, artifactURLs: artifactURLs, baseDirectory: output)
-                        try AtomicFile.write(try encoder.encode(manifest), to: output.appendingPathComponent("run-manifest.json"))
+                        try UnifiedOutput.writeManifest(inputPath: file.path, sourceSHA256: hash, duration: duration, coverageRanges: ranges, modules: status.modules, samples: sampleMap, artifactURLs: artifactURLs, baseDirectory: output, to: output.appendingPathComponent("run-manifest.json"), encoder: encoder)
                         try record("runManifest", "completed", nil, ResumeFingerprint(sourceSHA256: hash, engine: "run-manifest-v1", parameters: [:]))
                     } catch {
                         anyFailed = true

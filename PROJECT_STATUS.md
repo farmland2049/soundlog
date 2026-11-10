@@ -1,8 +1,8 @@
 # soundlog 项目状态
 
-更新日期：2026-11-10。当前阶段：通用转写、环境声事件核心、匿名说话人时间线、候选对齐及FluidAudio v0.17.7离线适配器已实现；新增身份库跨平台数据骨架、整合状态校验与模块断点续跑。Mac历史验证为`swift build`通过、`swift test` 32项通过；本轮Linux `swift build`与`swift test`通过，共54项测试。SwiftPM解析时将FluidAudio 0.17.7及声明的Nemo二进制工件取入忽略目录`.build/`；未下载说话人模型权重、未处理真实录音。
+更新日期：2026-11-10。当前阶段：通用转写、环境声事件核心、匿名说话人时间线、候选对齐及FluidAudio v0.17.7离线适配器已实现；新增身份库跨平台数据骨架、整合状态校验与模块断点续跑。Mac历史验证为`swift build`通过、`swift test` 32项通过；本轮Linux `swift build`与`swift test`通过，共55项测试。SwiftPM解析时将FluidAudio 0.17.7及声明的Nemo二进制工件取入忽略目录`.build/`；未下载说话人模型权重、未处理真实录音。
 
-本轮 `stage6-unified-output` Linux 合成验证已补齐统一候选逐字稿、run-manifest、覆盖缺口和首中尾抽样、原子写入失败测试，以及 `scripts/mac-verify.sh`。最终 `swift build` 通过，`swift test` 共54项通过；脚本默认报告写入`/tmp/soundlog-mac-verify.md`。Apple 框架与 Mac 实机流程仍未由 Linux 验证。
+本轮 `stage6-unified-output` Linux 合成验证已补齐统一候选逐字稿、run-manifest、覆盖缺口和首中尾抽样、原子写入失败测试，以及 `scripts/mac-verify.sh`。最终 `swift build` 通过，`swift test` 共55项通过；脚本默认报告写入`/tmp/soundlog-mac-verify.md`。Apple 框架与 Mac 实机流程仍未由 Linux 验证。
 
 ## 目标与边界
 
