@@ -38,7 +38,7 @@
 - 本轮为候选对齐纯函数新增5项合成测试：时间重叠候选、多说话人候选、无重叠未匹配、源哈希不一致拒绝、录音起点不一致拒绝。
 - 新增Core身份库骨架：样本以原文件路径/时间范围/源哈希引用；add与split均清除预填姓名、确认标志及伪造的确认/改名历史，新登记只有显式确认后才绑定姓名；rename仅允许已确认登记。保存依据、模型与引擎版本及创建/确认/拆分/合并/改名/撤销历史；只匹配确认且未撤销登记，结果提供unknown和非概率原始相似度。真实身份向量/样本未写入仓库，身份库运行目录已忽略。合成身份测试7项通过（含 split/rename 确认约束）。
 - 新增整合产物时间范围和覆盖校验、共享可序列化模块状态及续跑判定。声音事件、说话人分离及候选对齐只有在完整产物存在且源哈希、引擎和必要参数指纹一致时复用，否则重跑；Linux对不支持模块写明unsupported。对应合成测试3项通过。
-- 本轮Linux原始Package manifest下`swift build`及`swift test`通过，共54项测试。SwiftPM将FluidAudio 0.17.7与Nemo工件取入`.build/`；未下载说话人模型、未写入真实声纹。
+- 本轮Linux原始Package manifest下`swift build`及`swift test`通过，共55项测试。SwiftPM将FluidAudio 0.17.7与Nemo工件取入`.build/`；未下载说话人模型、未写入真实声纹。
 - [六阶段执行计划](.hermes/plans/2026-11-09_144613-soundlog.md)及[结构化会话归档](记录/会话归档/2026-11-09-需求调研与实施规划.md)已保存；Basic Memory摘要通过连接工具写入并读回，标识见README.md。
 
 ## 未实施／待决定
@@ -60,7 +60,7 @@
 
 - stage6 本轮结果：Core 纯函数渲染匿名候选稿、按 WAV 头计算时长/覆盖缺口、首中尾采样及清单产物 SHA-256。`process` 在模块结果后生成 Markdown/TXT、`run-manifest.json`，保留失败或 unsupported 状态。若无法从格式或结果取得音频总时长，manifest 将该字段和覆盖报告标为 `null`；当前仅 WAV 有可靠时长解析。
 - `bash scripts/mac-verify.sh` 使用合成 1 秒静音 WAV；报告默认写入 `/tmp/soundlog-mac-verify.md`，可用 `SOUNDLOG_VERIFY_REPORT` 指定位置。脚本记录 OS/Swift 版本、build/test 状态、测试数及 process 模块状态。Linux 上 Apple 模块 `unsupported` 并导致 process 非零退出是预期；Mac 未执行，模型缺失实机状态未验证。
-- 本轮新增 7 项合成单元测试，累计54项全部通过；`git diff --check`通过。没有加入真实录音、模型、声纹或身份样本。
+- 本轮累计55项合成单元测试全部通过；`git diff --check`通过。没有加入真实录音、模型、声纹或身份样本。
 
 - [文件迁移清单](记录/文件迁移清单.json)：原路径、现路径、每个文件的字节数、SHA-256及权限；包含兼容链接状态。
 - `记录/整理验收.json`：实际验收后生成，包括完整性、路径、原录音可读性、工具路径及压缩包检查。未见此文件前不得把预期检查写成已通过。
