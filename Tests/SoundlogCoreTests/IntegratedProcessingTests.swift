@@ -9,8 +9,46 @@ private final class CountingArtifactHasher: ArtifactHashing, @unchecked Sendable
 private struct ENOSPCWriter: AtomicFileWriting {
     func write(_ data: Data, to destination: URL) throws { throw NSError(domain: NSPOSIXErrorDomain, code: 28) }
 }
+private struct ENOSPCStreamingWriter: AtomicFileStreamingWriting {
+    func writeStreaming(to destination: URL, body: (FileHandle) throws -> Void) throws { throw NSError(domain: NSCocoaErrorDomain, code: 640) }
+}
 
 final class IntegratedProcessingTests: XCTestCase {
+    func testSoundEventSidecarMustBeCompleteAndMatchSummaryCount() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
+        let summary = root.appendingPathComponent("sound-events.json"), sidecar = root.appendingPathComponent("sound-event-windows.ndjson")
+        try Data("{\"schemaVersion\":1,\"sourceSHA256\":\"hash\",\"engine\":\"engine\",\"parameters\":{},\"windowCount\":2}".utf8).write(to: summary)
+        let rows = "{\"startOffsetSeconds\":0,\"endOffsetSeconds\":1,\"candidates\":[],\"classificationStatus\":\"unknown\"}\n{\"startOffsetSeconds\":1,\"endOffsetSeconds\":2,\"candidates\":[],\"classificationStatus\":\"unknown\"}\n"
+        let fp = ResumeFingerprint(sourceSHA256: "hash", engine: "engine", parameters: [:])
+        let completed = IntegratedModuleStatus(state: "completed", fingerprint: fp)
+        func decision(_ bytes: String?) -> ResumeDecision {
+            if let bytes { try? Data(bytes.utf8).write(to: sidecar) } else { try? FileManager.default.removeItem(at: sidecar) }
+            return IntegratedModuleResumePlanner.plan(expected: fp, status: completed, artifactURL: summary, sidecarURL: sidecar)
+        }
+        XCTAssertEqual(decision(rows), .reuse)
+        XCTAssertNotEqual(decision(""), .reuse)
+        XCTAssertNotEqual(decision(String(rows.dropLast(2))), .reuse)
+        let firstLine = String(rows.split(separator: "\n")[0])
+        XCTAssertNotEqual(decision(rows.replacingOccurrences(of: firstLine, with: "{bad}")), .reuse)
+        XCTAssertNotEqual(decision(nil), .reuse)
+    }
+
+    func testSkipCapturesResidentMemoryAndDiskFullVariantsAreRecognized() async throws {
+        let statusURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: statusURL) }
+        var status = IntegratedProcessingStatus(sourcePath: "synthetic", sourceSHA256: "hash")
+        IntegratedModuleExecutor.skip(module: "unsupported", state: "unsupported", reason: "platform", status: &status, statusURL: statusURL)
+        let skipped = try XCTUnwrap(status.modules["unsupported"])
+        XCTAssertGreaterThan(skipped.residentBytesBefore ?? 0, 0); XCTAssertGreaterThan(skipped.residentBytesAfter ?? 0, 0); XCTAssertGreaterThan(skipped.processPeakResidentBytes ?? 0, 0)
+        for error in [NSError(domain: NSCocoaErrorDomain, code: 640), NSError(domain: "wrapper", code: 1, userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: 28)])] {
+            let module = UUID().uuidString
+            let ok = await IntegratedModuleExecutor.execute(module: module, fingerprint: ResumeFingerprint(sourceSHA256: "hash", engine: "x", parameters: [:]), status: &status, statusURL: statusURL) { throw error }
+            XCTAssertFalse(ok); XCTAssertTrue(status.modules[module]?.error?.contains("ENOSPC") == true)
+        }
+        XCTAssertThrowsError(try AtomicFile.writeStreaming(to: statusURL, using: ENOSPCStreamingWriter()) { _ in })
+    }
+
     func testExecutorRecomputesReusesAndInvalidatesThroughRealOperations() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

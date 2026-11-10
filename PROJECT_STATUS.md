@@ -83,8 +83,8 @@
 
 - A（commit `c3e2ef7`）：processing-status 为产物缓存 size、纳秒 mtime 和 SHA-256；size 与 mtime 不变时命中缓存，变化时使用现有流式 SHA256.file 重算。`IntegratedModuleResumePlanner` 以 FileHandle 64 KiB 缓冲扫描顶层 JSON，仅解析目标小字段并按 JSON 语法跳过大数组/对象。测试覆盖同一产物缓存命中、mtime 变化后同尺寸内容变更、固定 mtime 的截断产物，以及元数据位于约数 MB `windows` 数组之后的输入；合成扫描实测约1.4秒。
 - D（commit `e03f7f0`）：AtomicFile 支持注入写入器；模拟 POSIX ENOSPC 时模块为 failed，错误写明“磁盘空间不足 (ENOSPC, errno 28)”，processing-status 与 run-manifest 可写时均落盘。`mac-verify.sh --simulate-missing-model` 将 FluidAudio 模型路径覆盖为本次临时空目录，不访问真实缓存；Linux 报告 FluidAudio unsupported。Mac 上实际模型缺失故障流程未验证。
-- B（commit `725a3a3`）：逐窗口候选现逐行写入 `sound-event-windows.ndjson`，事件 JSON 保存合并结果、窗口数量及 NDJSON 引用。窗口索引对应 NDJSON 行号，`SoundEventWindowReader` 支持按索引逐行回查；统一稿抽样和 run-manifest 均收录 sidecar。没有 NDJSON sidecar 的旧嵌入窗口运行目录在 Mac SoundAnalysis 管线中判为需重跑一次。
-- B 的 Linux 合成测量为15,000窗口、每窗300候选：旧嵌入 JSON 208,308,373字节；新格式摘要 JSON 404字节，NDJSON 208,308,029字节，合计208,308,433字节。Swift SHA256 首次哈希与缓存指纹、摘要流式字段校验计时见`/workspace/soundlog-stage8-logs/b-size-compare.log`。数据为合成数据，非 Mac 真录音；此处只记录测得值。
+- B（commit `725a3a3`）：逐窗口候选现逐行写入 `sound-event-windows.ndjson`，事件 JSON 保存合并结果、窗口数量及 NDJSON 引用。窗口索引对应 NDJSON 行号，`SoundEventWindowReader` 支持按索引逐行回查；统一稿抽样和 run-manifest 均收录 sidecar。缺少 NDJSON sidecar，或摘要窗口数与逐行解码校验不符、sidecar 为空/截断/含坏行时，SoundAnalysis 模块续跑判为需重跑。
+- B 的 Linux 合成测量为15,000窗口、每窗300候选：旧嵌入 JSON 384,432,480字节；新格式摘要 JSON 214,676字节，NDJSON 185,422,784字节，合计185,637,460字节。首次 SHA-256、缓存指纹及包含 NDJSON 流式完整校验的续跑计时见`/workspace/soundlog-stage8-logs/b-size-compare.log`。数据为合成数据，非 Mac 真录音；此处只记录测得值。
 - C（commit `8582360`）：执行器为执行模块记录 `residentBytesBefore`、`residentBytesAfter` 和 `processPeakResidentBytes`。Linux 读取 `/proc/self/statm`；macOS 使用 `task_info/mach_task_basic_info`，代码位于 macOS 条件编译内。Linux 测试确认三个字段均为正数。
-- 本轮 Linux `swift build` 通过、`swift test` 74项通过。Mac 本轮未验证；Apple/FluidAudio 与 macOS RSS 分支未在本轮构建。`bash scripts/mac-verify.sh` 及缺模型选项在 Linux 均运行合成 process，按脚本约定 process 的平台不支持退出记录在报告中，脚本整体退出0。
-- 本轮验证日志位于`/workspace/soundlog-stage8-logs/verify-build.log`、`verify-test.log`、`verify-diff-check.log`、`verify-mac-verify.log`、`verify-mac-verify-missing-model.log`；所有性能值均为本轮 Linux 合成测量，不作为性能结论。
+- 本轮 Linux `swift build` 通过、`swift test` 76项通过。Mac 本轮未验证；Apple/FluidAudio 与 macOS RSS 分支未在本轮构建。`bash scripts/mac-verify.sh` 及缺模型选项在 Linux 均运行合成 process，按脚本约定 process 的平台不支持退出记录在报告中，脚本整体退出0。
+- 本轮验证日志位于`/workspace/soundlog-stage8-logs/rework-verify-build.log`、`rework-verify-test.log`、`rework-verify-diff-check.log`、`rework-verify-mac-verify.log`、`rework-verify-mac-verify-missing-model.log`；所有性能值均为本轮 Linux 合成测量，不作为性能结论。

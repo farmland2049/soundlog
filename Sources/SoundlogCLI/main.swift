@@ -72,8 +72,7 @@ import SoundlogCore
                     #if canImport(SoundAnalysis) && canImport(AVFoundation)
                     // Legacy runs embedded candidates in the summary and have no sidecar.
                     // They are intentionally recomputed once into the new two-file format.
-                    if !FileManager.default.fileExists(atPath: soundWindowsArtifact.path) { status.modules["soundEvents"] = nil }
-                    let soundCompleted = await IntegratedModuleExecutor.execute(module: "soundEvents", fingerprint: soundFingerprint, artifactURL: soundArtifact, status: &status, statusURL: statusURL, encoder: encoder) {
+                    let soundCompleted = await IntegratedModuleExecutor.execute(module: "soundEvents", fingerprint: soundFingerprint, artifactURL: soundArtifact, sidecarURL: soundWindowsArtifact, status: &status, statusURL: statusURL, encoder: encoder) {
                         _ = try await SoundEventPipeline(engine: AppleSoundEventEngine()).run(file: file, runDirectory: output, parameters: diarizationParameters)
                     }
                     if !soundCompleted { anyFailed = true }
@@ -153,6 +152,7 @@ import SoundlogCore
                         try AtomicFile.write(try encoder.encode(status), to: statusURL)
                     }
                     var sampleMap = Dictionary(uniqueKeysWithValues: artifactURLs.compactMap { key, url -> (String, [String])? in
+                        guard key != "sound-event-windows" else { return nil }
                         guard let data = try? Data(contentsOf: url) else { return nil }
                         if key == "transcription-raw", let raw = try? JSONDecoder().decode(RawTranscription.self, from: data) {
                             return (key, raw.segments.map { "\($0.startOffsetSeconds)-\($0.endOffsetSeconds): \($0.text)" })

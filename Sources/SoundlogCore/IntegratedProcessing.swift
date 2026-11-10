@@ -83,7 +83,7 @@ public struct IntegratedProcessingStatus: Codable, Equatable, Sendable {
 }
 
 public enum IntegratedModuleResumePlanner {
-    public static func plan(expected: ResumeFingerprint, status: IntegratedModuleStatus?, artifactURL: URL, cachedFingerprint: ArtifactFingerprint? = nil, hasher: any ArtifactHashing = DefaultArtifactHasher()) -> ResumeDecision {
+    public static func plan(expected: ResumeFingerprint, status: IntegratedModuleStatus?, artifactURL: URL, sidecarURL: URL? = nil, cachedFingerprint: ArtifactFingerprint? = nil, hasher: any ArtifactHashing = DefaultArtifactHasher()) -> ResumeDecision {
         guard let status else { return .rerun("无模块记录") }
         guard status.state == "completed" else { return .rerun("模块未完成") }
         guard status.fingerprint == expected else { return .rerun("哈希、参数或引擎指纹变") }
@@ -92,6 +92,7 @@ public enum IntegratedModuleResumePlanner {
               let schemaVersion = object["schemaVersion"] as? Int, schemaVersion > 0,
               let sourceSHA256 = object["sourceSHA256"] as? String,
               sourceSHA256 == expected.sourceSHA256 else { return .rerun("产物缺失、无效或源哈希不符") }
+        if let sidecarURL, (try? SoundEventSidecarValidator.validate(summaryURL: artifactURL, sidecarURL: sidecarURL)) == nil { return .rerun("声音事件候选 sidecar 缺失或无效") }
         guard (try? ArtifactMetadata.fingerprint(artifactURL, using: hasher, cached: cachedFingerprint)) != nil else { return .rerun("产物指纹读取失败") }
         let reportedEngine = (object["engine"] as? String) ?? (object["alignmentMethod"] as? String)
         guard reportedEngine == expected.engine else { return .rerun("产物引擎指纹不符") }
@@ -104,6 +105,28 @@ public enum IntegratedModuleResumePlanner {
             }
         }
         return .reuse
+    }
+}
+
+/// Validates a sound-event sidecar without retaining the file in memory.
+public enum SoundEventSidecarValidator {
+    public static func validate(summaryURL: URL, sidecarURL: URL) throws {
+        let fields = try StreamingJSONTopLevelFields.read(summaryURL, wanted: ["windowCount"])
+        guard let count = fields["windowCount"] as? Int, count >= 0 else { throw TranscriptionError.io("windowCount 缺失或无效") }
+        let handle = try FileHandle(forReadingFrom: sidecarURL); defer { try? handle.close() }
+        let decoder = JSONDecoder()
+        var line = Data(), lines = 0, sawByte = false, endedWithNewline = false
+        while let chunk = try handle.read(upToCount: 65_536), !chunk.isEmpty {
+            for byte in chunk {
+                sawByte = true
+                if byte == 10 {
+                    guard !line.isEmpty else { throw TranscriptionError.io("空 sidecar 行") }
+                    _ = try decoder.decode(SoundClassificationWindow.self, from: line)
+                    lines += 1; line.removeAll(keepingCapacity: true); endedWithNewline = true
+                } else { line.append(byte); endedWithNewline = false }
+            }
+        }
+        guard sawByte, line.isEmpty, endedWithNewline, lines == count else { throw TranscriptionError.io("sidecar 行数或末行无效") }
     }
 }
 
@@ -240,17 +263,21 @@ public enum IntegratedArtifactValidator {
 /// module is persisted without preventing its caller from running later modules.
 public enum IntegratedModuleExecutor {
     public static func skip(module: String, state: String = "skipped", reason: String, fingerprint: ResumeFingerprint? = nil, status: inout IntegratedProcessingStatus, statusURL: URL, encoder: JSONEncoder = JSONEncoder()) {
+        let resident = ProcessResidentMemory.current()
         status.record(module, state: state, error: reason, fingerprint: fingerprint)
         status.modules[module]?.execution = "skip"
         status.modules[module]?.wallClockSeconds = 0
+        status.modules[module]?.residentBytesBefore = resident
+        status.modules[module]?.residentBytesAfter = ProcessResidentMemory.current()
+        status.modules[module]?.processPeakResidentBytes = ProcessPeakMemory.current().bytes
         try? AtomicFile.write(try encoder.encode(status), to: statusURL)
     }
     @discardableResult
-    public static func execute(module: String, fingerprint: ResumeFingerprint, artifactURL: URL? = nil, status: inout IntegratedProcessingStatus, statusURL: URL, encoder: JSONEncoder = JSONEncoder(), hasher: any ArtifactHashing = DefaultArtifactHasher(), operation: @Sendable () async throws -> Void) async -> Bool {
+    public static func execute(module: String, fingerprint: ResumeFingerprint, artifactURL: URL? = nil, sidecarURL: URL? = nil, status: inout IntegratedProcessingStatus, statusURL: URL, encoder: JSONEncoder = JSONEncoder(), hasher: any ArtifactHashing = DefaultArtifactHasher(), operation: @Sendable () async throws -> Void) async -> Bool {
         if let artifactURL, let updated = try? ArtifactMetadata.fingerprint(artifactURL, using: hasher, cached: status.artifactFingerprints[artifactURL.path]) {
             status.artifactFingerprints[artifactURL.path] = updated
         }
-        if let artifactURL, IntegratedModuleResumePlanner.plan(expected: fingerprint, status: status.modules[module], artifactURL: artifactURL, cachedFingerprint: status.artifactFingerprints[artifactURL.path], hasher: hasher) == .reuse {
+        if let artifactURL, IntegratedModuleResumePlanner.plan(expected: fingerprint, status: status.modules[module], artifactURL: artifactURL, sidecarURL: sidecarURL, cachedFingerprint: status.artifactFingerprints[artifactURL.path], hasher: hasher) == .reuse {
             status.modules[module]?.execution = "reuse"
             status.modules[module]?.wallClockSeconds = 0
             try? AtomicFile.write(try encoder.encode(status), to: statusURL)
@@ -292,7 +319,13 @@ public enum IntegratedModuleExecutor {
     }
     private static func failureDescription(_ error: Error) -> String {
         let nsError = error as NSError
-        if nsError.domain == NSPOSIXErrorDomain && nsError.code == 28 { return "磁盘空间不足 (ENOSPC, errno 28)" }
+        func isFull(_ error: NSError) -> Bool {
+            if (error.domain == NSPOSIXErrorDomain && error.code == 28) || (error.domain == NSCocoaErrorDomain && error.code == 640) { return true }
+            if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError, isFull(underlying) { return true }
+            if let underlying = error.userInfo[NSUnderlyingErrorKey] as? Error { return isFull(underlying as NSError) }
+            return false
+        }
+        if isFull(nsError) { return "磁盘空间不足 (ENOSPC, errno 28)" }
         return String(describing: error)
     }
 }

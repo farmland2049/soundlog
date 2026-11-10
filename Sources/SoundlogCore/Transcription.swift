@@ -148,6 +148,7 @@ public struct EngineResult: Sendable { public let segments: [TranscriptSegment];
 public protocol TranscriptionEngine: Sendable { var identifier: String { get }; func transcribe(file: URL) async throws -> EngineResult }
 
 public protocol AtomicFileWriting: Sendable { func write(_ data: Data, to destination: URL) throws }
+public protocol AtomicFileStreamingWriting: Sendable { func writeStreaming(to destination: URL, body: (FileHandle) throws -> Void) throws }
 public struct DefaultAtomicFileWriter: AtomicFileWriting {
     public init() {}
     public func write(_ data: Data, to destination: URL) throws { try AtomicFile.writeDefault(data, to: destination) }
@@ -163,7 +164,9 @@ public enum AtomicFile {
         do { try data.write(to: temporary, options: .withoutOverwriting); if rename(temporary.path, destination.path) != 0 { throw TranscriptionError.io("无法原子替换 \(destination.path)") } }
         catch { try? fm.removeItem(at: temporary); throw error }
     }
-    public static func writeStreaming(to destination: URL, _ body: (FileHandle) throws -> Void) throws {
+    public static func writeStreaming(to destination: URL, _ body: (FileHandle) throws -> Void) throws { try writeStreaming(to: destination, using: DefaultAtomicFileStreamingWriter(), body: body) }
+    public static func writeStreaming(to destination: URL, using writer: any AtomicFileStreamingWriting, body: (FileHandle) throws -> Void) throws { try writer.writeStreaming(to: destination, body: body) }
+    fileprivate static func writeStreamingDefault(to destination: URL, body: (FileHandle) throws -> Void) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         let temporary = destination.deletingLastPathComponent().appendingPathComponent(".\(destination.lastPathComponent).\(UUID().uuidString).tmp")
@@ -175,6 +178,10 @@ public enum AtomicFile {
             if rename(temporary.path, destination.path) != 0 { throw TranscriptionError.io("无法原子替换 \(destination.path)，errno \(errno)") }
         } catch { try? fm.removeItem(at: temporary); throw error }
     }
+}
+public struct DefaultAtomicFileStreamingWriter: AtomicFileStreamingWriting {
+    public init() {}
+    public func writeStreaming(to destination: URL, body: (FileHandle) throws -> Void) throws { try AtomicFile.writeStreamingDefault(to: destination, body: body) }
 }
 
 public struct TranscriptionPipeline: Sendable {
