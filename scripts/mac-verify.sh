@@ -12,6 +12,8 @@ swift build >"$work/build.log" 2>&1
 build_code=$?
 swift test >"$work/test.log" 2>&1
 test_code=$?
+swift test --filter TimelineTests/testMacVerifySyntheticInputFilenamePassesProjectParser >"$work/filename-check.log" 2>&1
+filename_check_code=$?
 
 python3 - "$work/input/20261110120000.wav" <<'PY'
 import struct, sys, wave
@@ -60,4 +62,5 @@ cat "$work/build.log"
 cat "$work/test.log"
 cat "$work/process.log"
 echo "验证报告：$report"
-[[ "$build_code" == 0 && "$test_code" == 0 && -f "$report" ]]
+cat "$work/filename-check.log"
+[[ "$build_code" == 0 && "$test_code" == 0 && "$filename_check_code" == 0 && -f "$report" ]]

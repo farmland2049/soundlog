@@ -28,6 +28,7 @@ import SoundlogCore
             try AtomicFile.write(try encoder.encode(manifest), to: run.appendingPathComponent("manifest.json"))
             if options.command == .manifest { print("清单已写入: \(run.path)"); return }
             if options.command == .process {
+                let processStart = Date()
                 let allowed = Set(["locale", "confidenceThreshold", "minimumEventDurationSeconds", "mergeGapSeconds"])
                 if let unknown = options.parameters.keys.first(where: { !allowed.contains($0) }) {
                     throw TranscriptionError.usage("process 不支持参数: \(unknown)")
@@ -43,8 +44,18 @@ import SoundlogCore
                     var status = (try? JSONDecoder().decode(IntegratedProcessingStatus.self, from: Data(contentsOf: statusURL)))
                         .flatMap { $0.sourceSHA256 == hash ? $0 : nil }
                         ?? IntegratedProcessingStatus(sourcePath: file.path, sourceSHA256: hash)
+                    var moduleStarts: [String: Date] = [:]
                     func record(_ module: String, _ state: String, _ error: String? = nil, _ fingerprint: ResumeFingerprint? = nil) throws {
                         status.record(module, state: state, error: error, fingerprint: fingerprint)
+                        if state == "running" { moduleStarts[module] = Date() }
+                        else if let start = moduleStarts.removeValue(forKey: module) {
+                            status.modules[module]?.wallClockSeconds = Date().timeIntervalSince(start)
+                            status.modules[module]?.execution = "recomputed"
+                        } else if state == "completed" {
+                            status.modules[module]?.execution = "reuse"
+                        } else if ["failed", "unsupported", "skipped"].contains(state) {
+                            status.modules[module]?.execution = state == "skipped" ? "skip" : state
+                        }
                         try IntegratedArtifactValidator.validate(status: status)
                         try AtomicFile.write(try encoder.encode(status), to: output.appendingPathComponent("processing-status.json"))
                     }
@@ -93,12 +104,11 @@ import SoundlogCore
                     #if os(macOS)
                     let speakerDecision = IntegratedModuleResumePlanner.plan(expected: speakerFingerprint, status: status.modules["speakerDiarization"], artifactURL: speakerArtifact)
                     if speakerDecision == .reuse { try record("speakerDiarization", "completed", nil, speakerFingerprint) } else {
-                    try record("speakerDiarization", "running", nil, speakerFingerprint)
                     #if os(macOS)
-                    do {
+                    let completed = await IntegratedModuleExecutor.execute(module: "speakerDiarization", fingerprint: speakerFingerprint, status: &status, statusURL: statusURL, encoder: encoder) {
                         _ = try await SpeakerTimelinePipeline(engine: FluidAudioSpeakerEngine()).run(file: file, runDirectory: output)
-                        try record("speakerDiarization", "completed", nil, speakerFingerprint)
-                    } catch { anyFailed = true; try record("speakerDiarization", "failed", String(describing: error), speakerFingerprint) }
+                    }
+                    if !completed { anyFailed = true }
                     #else
                     anyFailed = true; try record("speakerDiarization", "unsupported", "FluidAudio 仅支持 macOS", speakerFingerprint)
                     #endif
@@ -140,7 +150,8 @@ import SoundlogCore
                     } else {
                         try record("unifiedTranscript", "skipped", "没有可用候选对齐结果")
                     }
-                    let duration = try? UnifiedOutput.wavDuration(data: Data(contentsOf: file))
+                    let durationInfo = (try? Data(contentsOf: file)).map(UnifiedOutput.audioDuration(data:)) ?? AudioDuration(seconds: nil, method: "failed", error: "无法读取输入")
+                    let duration = durationInfo.seconds
                     var ranges: [AudioTimeRange] = []
                     if let rawData = try? Data(contentsOf: output.appendingPathComponent("raw.json")), let raw = try? JSONDecoder().decode(RawTranscription.self, from: rawData) {
                         ranges += raw.coverage.compactMap { try? AudioTimeRange(startOffsetSeconds: $0.start, endOffsetSeconds: $0.end) }
@@ -181,7 +192,9 @@ import SoundlogCore
                         return nil
                     })
                     do {
-                        try UnifiedOutput.writeManifest(inputPath: file.path, sourceSHA256: hash, duration: duration, coverageRanges: ranges, modules: status.modules, samples: sampleMap, artifactURLs: artifactURLs, baseDirectory: output, to: output.appendingPathComponent("run-manifest.json"), encoder: encoder)
+                        let memory = ProcessPeakMemory.current()
+                        let performance = RunPerformance(wallClockSeconds: Date().timeIntervalSince(processStart), peakMemoryBytes: memory.bytes, peakMemorySource: memory.source, ruMaxRSSUnit: memory.unit)
+                        try UnifiedOutput.writeManifest(inputPath: file.path, sourceSHA256: hash, duration: duration, coverageRanges: ranges, modules: status.modules, samples: sampleMap, artifactURLs: artifactURLs, baseDirectory: output, to: output.appendingPathComponent("run-manifest.json"), encoder: encoder, durationMethod: durationInfo.method, durationError: durationInfo.error, performance: performance)
                         try record("runManifest", "completed", nil, ResumeFingerprint(sourceSHA256: hash, engine: "run-manifest-v1", parameters: [:]))
                     } catch {
                         anyFailed = true

@@ -7,6 +7,11 @@ final class TimelineTests: XCTestCase {
         XCTAssertEqual(try start.timestamp(atOffsetSeconds: 0), "2024-02-29T01:01:02.000")
     }
 
+    func testMacVerifySyntheticInputFilenamePassesProjectParser() throws {
+        XCTAssertNoThrow(try RecordingStart(filename: "20261110120000.wav"))
+        XCTAssertThrowsError(try RecordingStart(filename: "20261110120000-synthetic.wav"))
+    }
+
     func testRejectsMalformedFilenameAndInvalidDate() {
         XCTAssertThrowsError(try RecordingStart(filename: "20261107100316-copy.mp3"))
         XCTAssertThrowsError(try RecordingStart(filename: "20251301120000.mp3"))

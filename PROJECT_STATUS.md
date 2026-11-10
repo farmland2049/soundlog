@@ -1,6 +1,6 @@
 # soundlog 项目状态
 
-更新日期：2026-11-10。当前阶段：通用转写、环境声事件核心、匿名说话人时间线、候选对齐及FluidAudio v0.17.7离线适配器已实现；新增身份库跨平台数据骨架、整合状态校验与模块断点续跑。当前分支的 macOS `swift build`通过、`swift test` 55项通过；静音合成验证按预期记录`noSpeechDetected`，真实录音整合验证中三类模块及统一输出均完成。SwiftPM解析时将FluidAudio 0.17.7及声明的Nemo二进制工件取入忽略目录`.build/`；说话人模型从本机缓存加载。
+更新日期：2026-11-10。当前阶段：通用转写、环境声事件核心、匿名说话人时间线、候选对齐及FluidAudio v0.17.7离线适配器已实现；新增身份库跨平台数据骨架、整合状态校验与模块断点续跑。stage7 当前 Linux x86_64 / Swift 6.1.2 `swift build`通过，`swift test`共61项通过；`bash scripts/mac-verify.sh`已在 Linux 完整运行。此次没有在 Mac 上验证，Apple/FluidAudio 代码仍受平台条件编译保护。SwiftPM解析时将FluidAudio 0.17.7及声明的Nemo二进制工件取入忽略目录`.build/`；本轮未下载模型权重。
 
 本轮 `stage6-unified-output` Linux 合成验证已补齐统一候选逐字稿、run-manifest、覆盖缺口和首中尾抽样、原子写入失败测试，以及 `scripts/mac-verify.sh`。Mac 实机一键验证再次确认 `swift build` 通过、`swift test` 共55项通过；脚本默认报告写入`/tmp/soundlog-mac-verify.md`。随后使用用户提供的 `20261107191809.mp3` 本机运行 `process`：转写94段、SoundAnalysis 870个窗口/982个事件、匿名说话人168段/4个聚类；94段对齐稿中77段有时间重叠候选、13段有多个候选、17段未匹配。所有模块和 run-manifest 状态为 `completed`，源哈希为`1d6119da2d0c4d84049d95d24b082b7379b1ace4d5b7f14cdcccbb8f60948f0c`。录音未改写，结果仅在被忽略的本机`产出/2026-11-10-stage6-merge-verification/`；内容与分人质量仍未经人工核验。验证脚本的合成输入文件名已修正为满足项目严格14位时间戳格式。
 
@@ -61,6 +61,15 @@
 - stage6 本轮结果：Core 纯函数渲染匿名候选稿、按 WAV 头计算时长/覆盖缺口、首中尾采样及清单产物 SHA-256。`process` 在模块结果后生成 Markdown/TXT、`run-manifest.json`，保留失败或 unsupported 状态。若无法从格式或结果取得音频总时长，manifest 将该字段和覆盖报告标为 `null`；当前仅 WAV 有可靠时长解析。
 - `bash scripts/mac-verify.sh` 使用合成 1 秒静音 WAV；报告默认写入 `/tmp/soundlog-mac-verify.md`，可用 `SOUNDLOG_VERIFY_REPORT` 指定位置。脚本记录 OS/Swift 版本、build/test 状态、测试数及 process 模块状态。Linux 上 Apple 模块 `unsupported` 并导致 process 非零退出是预期；Mac 未执行，模型缺失实机状态未验证。
 - 本轮累计55项合成单元测试全部通过；`git diff --check`通过。没有加入真实录音、模型、声纹或身份样本。
+
+## stage7：时长、性能与失败续跑（Linux 合成验证）
+
+- Core 纯 Swift 时长读取：MP3 跳过 ID3v2，优先取 Xing/Info 或 VBRI 帧数，否则扫描 MPEG Layer III 帧；失败时不估算，清单写 `null`、`failed`/`unsupported` 方法及原因。M4A 读取 `mvhd`/`mdhd`。覆盖报告使用同一解析结果。清单包含 `durationMethod`、`durationError`。
+- 性能清单记录每模块 `wallClockSeconds` 和 `execution`（recomputed、reuse、skip 等），以及 process 墙钟和 `getrusage` 峰值内存；峰值统一另记字节，`ruMaxRSSUnit` 明示 Linux 原始值单位 KB、macOS 原始值单位 bytes。只记录测量值，不写性能结论。
+- 共享模块执行边界将可注入引擎/写盘错误持久化为 failed，其他模块可继续且运行清单仍可写出；原子写失败不留下半截目标文件。恢复继续使用源哈希、引擎/参数指纹和产物校验决定 reuse 或重跑。测试为假模型缺失、后续模块成功、原子产物写失败及清单保留状态。
+- 合成媒体测试包括 CBR MP3、Xing MP3、ID3v2 前缀、截断/垃圾输入及 M4A mvhd；文件名测试由 `RecordingStart` 验证脚本的 `20261110120000.wav`。`mac-verify.sh` 增加直接调用该项目解析器测试。
+- Linux 实际结果：`swift build` 通过；`swift test` 61 项通过；`bash scripts/mac-verify.sh` 退出码 0，报告记录测试数 61，合成 process 的 Apple/FluidAudio 模块为 unsupported（预期平台限制），process 退出码 1。脚本结束后仓库未生成文件。
+- Mac 编译/测试、Apple 模块性能、FluidAudio 模型缺失实机验证及真实 M4A 变体尚未验证。所有本轮测试输入为代码生成的合成字节/1 秒静音 WAV。
 
 - [文件迁移清单](记录/文件迁移清单.json)：原路径、现路径、每个文件的字节数、SHA-256及权限；包含兼容链接状态。
 - `记录/整理验收.json`：实际验收后生成，包括完整性、路径、原录音可读性、工具路径及压缩包检查。未见此文件前不得把预期检查写成已通过。

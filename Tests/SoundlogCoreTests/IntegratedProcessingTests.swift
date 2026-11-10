@@ -16,6 +16,43 @@ final class IntegratedProcessingTests: XCTestCase {
         let decoded = try JSONDecoder().decode(IntegratedProcessingStatus.self, from: data)
         XCTAssertEqual(decoded.modules["speakerDiarization"]?.error, "model missing")
     }
+
+    func testInjectedModelFailureIsPersistedAndLaterModuleAndManifestRun() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let statusURL = root.appendingPathComponent("processing-status.json")
+        let fingerprint = ResumeFingerprint(sourceSHA256: "synthetic-hash", engine: "fake-speaker-engine", parameters: [:])
+        var status = IntegratedProcessingStatus(sourcePath: "synthetic.mp3", sourceSHA256: "synthetic-hash")
+        let failed = await IntegratedModuleExecutor.execute(module: "speakerDiarization", fingerprint: fingerprint, status: &status, statusURL: statusURL) {
+            throw TranscriptionError.io("model missing")
+        }
+        XCTAssertFalse(failed)
+        let savedFailure = try JSONDecoder().decode(IntegratedProcessingStatus.self, from: Data(contentsOf: statusURL))
+        XCTAssertEqual(savedFailure.modules["speakerDiarization"]?.state, "failed")
+        XCTAssertTrue(savedFailure.modules["speakerDiarization"]?.error?.contains("model missing") == true)
+
+        let otherFingerprint = ResumeFingerprint(sourceSHA256: "synthetic-hash", engine: "synthetic-other", parameters: [:])
+        let artifact = root.appendingPathComponent("other-module.json")
+        let succeeded = await IntegratedModuleExecutor.execute(module: "otherModule", fingerprint: otherFingerprint, status: &status, statusURL: statusURL) {
+            try AtomicFile.write(Data("complete".utf8), to: artifact)
+        }
+        XCTAssertTrue(succeeded)
+        let blocker = root.appendingPathComponent("not-a-directory")
+        try Data("blocker".utf8).write(to: blocker)
+        let failedWrite = await IntegratedModuleExecutor.execute(module: "artifactWriter", fingerprint: otherFingerprint, status: &status, statusURL: statusURL) {
+            try AtomicFile.write(Data("partial".utf8), to: blocker.appendingPathComponent("artifact.json"))
+        }
+        XCTAssertFalse(failedWrite)
+        XCTAssertEqual(status.modules["artifactWriter"]?.state, "failed")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: blocker.appendingPathComponent("artifact.json").path))
+        let manifestURL = root.appendingPathComponent("run-manifest.json")
+        let manifest = try UnifiedOutput.writeManifest(inputPath: "synthetic.mp3", sourceSHA256: "synthetic-hash", duration: nil, coverageRanges: [], modules: status.modules, samples: [:], artifactURLs: ["other": artifact], baseDirectory: root, to: manifestURL, durationMethod: "frame-scan", durationError: nil, performance: RunPerformance(wallClockSeconds: 0.1, peakMemoryBytes: 1234, peakMemorySource: "getrusage", ruMaxRSSUnit: "KB"))
+        XCTAssertEqual(manifest.modules["speakerDiarization"]?.state, "failed")
+        XCTAssertEqual(manifest.modules["otherModule"]?.state, "completed")
+        XCTAssertEqual(manifest.modules["artifactWriter"]?.state, "failed")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manifestURL.path))
+    }
     func testResumeReusesMatchingHashParametersAndEngine() throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: file) }
@@ -23,6 +60,11 @@ final class IntegratedProcessingTests: XCTestCase {
         let fingerprint = ResumeFingerprint(sourceSHA256: "hash", engine: "engine-v1", parameters: ["threshold": "0.3"])
         let completed = IntegratedModuleStatus(state: "completed", fingerprint: fingerprint)
         XCTAssertEqual(IntegratedModuleResumePlanner.plan(expected: fingerprint, status: completed, artifactURL: file), .reuse)
+        try Data("damaged".utf8).write(to: file)
+        XCTAssertNotEqual(IntegratedModuleResumePlanner.plan(expected: fingerprint, status: completed, artifactURL: file), .reuse)
+        try FileManager.default.removeItem(at: file)
+        XCTAssertNotEqual(IntegratedModuleResumePlanner.plan(expected: fingerprint, status: completed, artifactURL: file), .reuse)
+        try JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "sourceSHA256": "hash", "engine": "engine-v1", "parameters": ["threshold": 0.3]]).write(to: file)
         XCTAssertNotEqual(IntegratedModuleResumePlanner.plan(expected: .init(sourceSHA256: "other", engine: "engine-v1", parameters: ["threshold": "0.3"]), status: completed, artifactURL: file), .reuse)
         XCTAssertNotEqual(IntegratedModuleResumePlanner.plan(expected: .init(sourceSHA256: "hash", engine: "engine-v1", parameters: ["threshold": "0.4"]), status: completed, artifactURL: file), .reuse)
     }
@@ -141,5 +183,78 @@ final class IntegratedProcessingTests: XCTestCase {
         var data = Data("RIFF".utf8); data.append(contentsOf: [0xa4,0x3e,0,0]); data.append(Data("WAVEfmt ".utf8));
         data.append(contentsOf: [16,0,0,0, 1,0, 1,0, 0x40,0x1f,0,0, 0x80,0x3e,0,0, 2,0,16,0]); data.append(Data("data".utf8)); data.append(contentsOf: [0x80,0x3e,0,0]); data.append(Data(repeating: 0, count: 16000))
         XCTAssertEqual(UnifiedOutput.wavDuration(data: data), 1)
+    }
+
+    private func mp3Frame(xingFrames: UInt32? = nil, vbriFrames: UInt32? = nil) -> Data {
+        let length = 417
+        var frame = Data([0xff, 0xfb, 0x90, 0x00]) + Data(repeating: 0, count: length - 4)
+        if let xingFrames {
+            frame.replaceSubrange(36..<40, with: Data("Xing".utf8))
+            frame[43] = 1
+            frame[44] = UInt8((xingFrames >> 24) & 0xff); frame[45] = UInt8((xingFrames >> 16) & 0xff)
+            frame[46] = UInt8((xingFrames >> 8) & 0xff); frame[47] = UInt8(xingFrames & 0xff)
+        }
+        if let vbriFrames {
+            frame.replaceSubrange(36..<40, with: Data("VBRI".utf8))
+            frame[50] = UInt8((vbriFrames >> 24) & 0xff); frame[51] = UInt8((vbriFrames >> 16) & 0xff)
+            frame[52] = UInt8((vbriFrames >> 8) & 0xff); frame[53] = UInt8(vbriFrames & 0xff)
+        }
+        return frame
+    }
+
+    func testSyntheticMP3CBRFrameScanAndID3v2() {
+        let cbr = mp3Frame() + mp3Frame() + mp3Frame()
+        let result = UnifiedOutput.audioDuration(data: cbr)
+        XCTAssertEqual(result.seconds ?? 0, 3 * 1152.0 / 44100.0, accuracy: 0.000001)
+        XCTAssertEqual(result.method, "frame-scan")
+        var tagged = Data("ID3".utf8) + Data([4, 0, 0, 0, 0, 0, 3]) + Data([1, 2, 3])
+        tagged.append(cbr)
+        XCTAssertEqual(UnifiedOutput.audioDuration(data: tagged).method, "frame-scan")
+        XCTAssertEqual(UnifiedOutput.audioDuration(data: tagged).seconds ?? 0, result.seconds ?? -1, accuracy: 0.000001)
+    }
+
+    func testSyntheticMP3XingAndInvalidInputs() {
+        let data = mp3Frame(xingFrames: 100) + mp3Frame()
+        let result = UnifiedOutput.audioDuration(data: data)
+        XCTAssertEqual(result.method, "xing")
+        XCTAssertEqual(result.seconds ?? 0, 100 * 1152.0 / 44100.0, accuracy: 0.000001)
+        let truncated = Data([0xff, 0xfb, 0x90, 0x00])
+        XCTAssertNil(UnifiedOutput.audioDuration(data: truncated).seconds)
+        XCTAssertEqual(UnifiedOutput.audioDuration(data: truncated).method, "failed")
+        let garbage = UnifiedOutput.audioDuration(data: Data("synthetic garbage".utf8))
+        XCTAssertNil(garbage.seconds)
+        XCTAssertEqual(garbage.method, "unsupported")
+        XCTAssertFalse(garbage.error?.isEmpty ?? true)
+        let vbri = UnifiedOutput.audioDuration(data: mp3Frame(vbriFrames: 80))
+        XCTAssertEqual(vbri.method, "vbri")
+        XCTAssertEqual(vbri.seconds ?? 0, 80 * 1152.0 / 44100.0, accuracy: 0.000001)
+    }
+
+    func testSyntheticM4AMVHDDuration() {
+        func u32(_ value: UInt32) -> Data { Data([UInt8(value >> 24), UInt8((value >> 16) & 255), UInt8((value >> 8) & 255), UInt8(value & 255)]) }
+        func atom(_ type: String, _ payload: Data) -> Data { u32(UInt32(payload.count + 8)) + Data(type.utf8) + payload }
+        let mvhd = Data(repeating: 0, count: 12) + u32(1000) + u32(12_345) + Data(repeating: 0, count: 20)
+        let data = atom("ftyp", Data("M4A ".utf8) + Data(repeating: 0, count: 8)) + atom("moov", atom("mvhd", mvhd))
+        let result = UnifiedOutput.audioDuration(data: data)
+        XCTAssertEqual(try XCTUnwrap(result.seconds), 12.345, accuracy: 0.000001)
+        XCTAssertEqual(result.method, "mvhd/mdhd")
+    }
+
+    func testPerformanceFieldsAndUnitsSerialize() throws {
+        let sample = ProcessPeakMemory.current()
+        let perf = RunPerformance(wallClockSeconds: 1.25, peakMemoryBytes: sample.bytes, peakMemorySource: sample.source, ruMaxRSSUnit: sample.unit)
+        let manifest = try UnifiedOutput.buildManifest(inputPath: "synthetic.mp3", sourceSHA256: "hash", duration: 1, coverageRanges: [], modules: ["m": IntegratedModuleStatus(state: "completed", wallClockSeconds: 0.25, execution: "recomputed")], samples: [:], artifactURLs: [:], baseDirectory: FileManager.default.temporaryDirectory, performance: perf)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(manifest)) as? [String: Any])
+        let encodedPerformance = try XCTUnwrap(object["performance"] as? [String: Any])
+        XCTAssertTrue(encodedPerformance["wallClockSeconds"] is NSNumber)
+        XCTAssertTrue(encodedPerformance["peakMemoryBytes"] is NSNumber)
+        XCTAssertTrue(["KB", "bytes"].contains(encodedPerformance["ruMaxRSSUnit"] as? String ?? ""))
+        XCTAssertEqual(manifest.modules["m"]?.execution, "recomputed")
+        XCTAssertNotNil(manifest.modules["m"]?.wallClockSeconds)
+        let unknownDuration = try UnifiedOutput.buildManifest(inputPath: "bad.mp3", sourceSHA256: "hash", duration: nil, coverageRanges: [], modules: [:], samples: [:], artifactURLs: [:], baseDirectory: FileManager.default.temporaryDirectory, durationMethod: "failed", durationError: "truncated")
+        let unknownJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(unknownDuration)) as? [String: Any])
+        XCTAssertTrue(unknownJSON["audioDurationSeconds"] is NSNull)
+        XCTAssertTrue(unknownJSON["coverage"] is NSNull)
+        XCTAssertEqual(unknownJSON["durationError"] as? String, "truncated")
     }
 }
