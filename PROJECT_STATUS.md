@@ -1,6 +1,6 @@
 # soundlog 项目状态
 
-更新日期：2026-11-10。当前阶段：通用转写、环境声事件核心、匿名说话人时间线、候选对齐及FluidAudio v0.17.7离线适配器已实现；新增身份库跨平台数据骨架、整合状态校验与模块断点续跑。stage7 的 Linux x86_64 / Swift 6.1.2 验证为 `swift build` 通过、`swift test` 68 项通过；Mac 27.2 / arm64 / Swift 6.4.2 已通过构建和 69 项测试，`bash scripts/mac-verify.sh` 退出码为0。另在一段本机MP3上完成整合流程及续跑验证；产物仍在忽略目录，语音和声学结果未人工核验。验证脚本不下载模型，但本机已有FluidAudio模型时会加载缓存。
+更新日期：2026-11-10。当前阶段：stage9 批量健壮性、验收报告与声纹身份比对跨平台数据骨架已完成。在 macOS 27.2 / arm64 / Swift 6.4.2 上完成 87 项测试全量通过及 `scripts/mac-verify.sh`（含缺失模型模拟）验证；构建并上线了待处理录音自动化流水线（`scripts/process-inbox.sh`）与大模型分析素材生成器（`scripts/prepare_llm_material.py`）。已对 13 份本地真实录音（累计时长超23小时）成功执行本机端到端处理，源音频已归档至 `录音/已归档/`，分析素材已汇总至 `产出/大模型分析素材/`。所有语音及声学识别结果均为机器初稿，未人工核验，未登记或确认具体真人身份。
 
 本轮 `stage6-unified-output` Linux 合成验证已补齐统一候选逐字稿、run-manifest、覆盖缺口和首中尾抽样、原子写入失败测试，以及 `scripts/mac-verify.sh`。Mac 实机一键验证再次确认 `swift build` 通过、`swift test` 共55项通过；脚本默认报告写入`/tmp/soundlog-mac-verify.md`。随后使用用户提供的 `20261107191809.mp3` 本机运行 `process`：转写94段、SoundAnalysis 870个窗口/982个事件、匿名说话人168段/4个聚类；94段对齐稿中77段有时间重叠候选、13段有多个候选、17段未匹配。所有模块和 run-manifest 状态为 `completed`，源哈希为`1d6119da2d0c4d84049d95d24b082b7379b1ace4d5b7f14cdcccbb8f60948f0c`。录音未改写，结果仅在被忽略的本机`产出/2026-11-10-stage6-merge-verification/`；内容与分人质量仍未经人工核验。验证脚本的合成输入文件名已修正为满足项目严格14位时间戳格式。
 
@@ -102,3 +102,26 @@
   - 身份比对与只读安全：只读加载指定路径的 `IdentityLibrary`（不存在视为空库），绝不采集、注册或写入任何真实声纹与身份。比对输出写入每个文件的 `speaker-identities.json`，记录已确认身份或未知状态，相似度标明为非概率原始相似度（raw similarity score）。若库中已有身份向量与待测向量维度不一致，严格抛出 `IdentityLibraryError.incompatibleVectors`。
   - Process 管线与验收集成：`process` 命令支持 `--param identityLibrary=<路径>` 与 `--param identityThreshold=<阈值>`（默认 0.8）。未提供时跳过并记录 `skipped`；Mock 模式下执行 mock 提取比对并输出产物；非 Mock Linux 记录 `unsupported`。模块状态 `speakerIdentities` 写入 `processing-status.json`、纳入 `run-manifest.json` 产物与抽样，并汇总进 `记录/整理验收.json`。单个文件声纹模块失败不会打断整批批处理。
   - Linux 构建与测试：`swift build` 与 `swift test` 87 项测试全部通过，覆盖 mock 确定性、合成身份命中、空库未知、维度不匹配报错及 process 流程集成。未采集或登记项目主人或任何真人的声音。
+
+## stage9 Mac 实体机验证与自动化归档流（2026-11-10）
+
+- **Mac 实体机环境与测试**：
+  - macOS 27.2 / arm64 / Apple M5，Swift 6.4.2。
+  - 修复 `Tests/SoundlogCoreTests/BatchAndMockTests.swift` 中 Darwin `/var` 符号链接与 `/private/var` 绝对路径比对断言；全量 87 项单元测试全部通过。
+  - `bash scripts/mac-verify.sh` 退出码 0，报告输出于 `/tmp/soundlog-mac-verify.md`。
+  - `bash scripts/mac-verify.sh --simulate-missing-model` 退出码 0，验证 FluidAudio 临时模型缺失时的健壮性，整批不中断。
+- **待处理录音与大模型素材管线**：
+  - 建立标准录音收纳目录结构：`录音/待处理/`（收纳未处理原始文件）、`录音/已归档/`（处理完成后源录音移动归档）。
+  - 新增流水线自动化脚本 `scripts/process-inbox.sh`：自动检测待处理目录，校验 14 位时间戳规范，调用 Release 优化二进制 `.build/release/SoundlogCLI process`，产出完成后触发素材生成器，并将源录音安全转移至归档目录由用户决定是否删除。
+  - 新增素材提取与 Prompt 模版生成器 `scripts/prepare_llm_material.py`：自动解析单次运行产物，提取音频基本信息、高频环境音事件Top10、匿名说话人时长比例，并合成单篇 `LLM分析素材.md` 与纯文本稿件；同步维护素材总索引表 `产出/大模型分析素材/README.md`。
+- **真实录音批次全量处理**：
+  - 本地共 13 份 MP3 录音文件（包括用户在会话中上传并命名为 `20261108153711.mp3` 的音频）成功完成全量流水线处理。
+  - 累计处理音频时长超过 23 小时，Release 模式下单份 3 小时长录音处理约 3~4 分钟，内存控制稳定，无泄漏。
+  - 13 份源录音已全部移至 `录音/已归档/`，`录音/待处理/` 恢复为空状态等待后续新文件。
+  - `产出/大模型分析素材/` 下已生成 13 个完整独立素材包及总索引，就绪供下游大模型做日常整理与洞察。
+  - 所有转写与声学推断保持机器初稿标注，未人工核验，未登记或确认具体真实身份。
+- **跨文件按天场景聚合与大模型素材重构（2026-11-10 晚）**：
+  - 新增 `scripts/build_daily_scenes.py`：打破单文件物理截断，基于无时区钟表时间轴按自然日跨文件聚合全天转写与声学事件。
+  - 基于真实对话自然停顿（90 秒无语音）自动聚类出“连续实体场景片段（Scene Episodes）”；通过文本密度阈值过滤零星孤立杂音并归入附录，使主干场景字数覆盖率高达 99.7%~100.0%。
+  - 融合 SoundAnalysis 环境声分类为人话释义（规避 AudioSet 低频噪音标签歧义），结合说话人聚类候选生成剧本式对话流。
+  - 产出落地于 `产出/大模型分析素材/每日场景/`（含 `2026-11-07` 与 `2026-11-08` 全景 Markdown 与结构化 JSON，以及总索引）；同时接入 `scripts/process-inbox.sh`，实现处理新录音后自动级联刷新每日场景库。

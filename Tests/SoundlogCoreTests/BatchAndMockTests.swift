@@ -175,11 +175,11 @@ final class BatchAndMockTests: XCTestCase {
         XCTAssertEqual(report.failureCount, 1)
         XCTAssertTrue(report.isMock)
 
-        let goodRecord = report.files.first { $0.path == goodWav.path }
+        let goodRecord = report.files.first { URL(fileURLWithPath: $0.path).lastPathComponent == goodWav.lastPathComponent }
         XCTAssertEqual(goodRecord?.status, "completed")
         XCTAssertNil(goodRecord?.failureReason)
 
-        let badRecord = report.files.first { $0.path == badWav.path }
+        let badRecord = report.files.first { URL(fileURLWithPath: $0.path).lastPathComponent == badWav.lastPathComponent }
         XCTAssertEqual(badRecord?.status, "failed")
         XCTAssertNotNil(badRecord?.failureReason)
     }
