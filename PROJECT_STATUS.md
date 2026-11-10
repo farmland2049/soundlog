@@ -59,7 +59,7 @@
 ## 验收与证据
 
 - stage6 本轮结果：Core 纯函数渲染匿名候选稿、按 WAV 头计算时长/覆盖缺口、首中尾采样及清单产物 SHA-256。`process` 在模块结果后生成 Markdown/TXT、`run-manifest.json`，保留失败或 unsupported 状态。若无法从格式或结果取得音频总时长，manifest 将该字段和覆盖报告标为 `null`；当前仅 WAV 有可靠时长解析。
-- `bash scripts/mac-verify.sh` 使用合成 1 秒静音 WAV；报告写入 `reports/mac-verify.md`。脚本记录 OS/Swift 版本、build/test 状态、测试数及 process 模块状态。Linux 上 Apple 模块 `unsupported` 并导致 process 非零退出是预期；Mac 未执行，模型缺失实机状态未验证。
+- `bash scripts/mac-verify.sh` 使用合成 1 秒静音 WAV；报告默认写入 `/tmp/soundlog-mac-verify.md`，可用 `SOUNDLOG_VERIFY_REPORT` 指定位置。脚本记录 OS/Swift 版本、build/test 状态、测试数及 process 模块状态。Linux 上 Apple 模块 `unsupported` 并导致 process 非零退出是预期；Mac 未执行，模型缺失实机状态未验证。
 - 本轮新增 7 项合成单元测试，累计54项全部通过；`git diff --check`通过。没有加入真实录音、模型、声纹或身份样本。
 
 - [文件迁移清单](记录/文件迁移清单.json)：原路径、现路径、每个文件的字节数、SHA-256及权限；包含兼容链接状态。
