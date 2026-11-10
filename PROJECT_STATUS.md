@@ -1,8 +1,8 @@
 # soundlog 项目状态
 
-更新日期：2026-11-10。当前阶段：通用转写、环境声事件核心、匿名说话人时间线、候选对齐及FluidAudio v0.17.7离线适配器已实现；新增身份库跨平台数据骨架、整合状态校验与模块断点续跑。Mac历史验证为`swift build`通过、`swift test` 32项通过；本轮Linux在原始Package manifest下`swift build`与`swift test`通过，共47项测试。SwiftPM解析时将FluidAudio 0.17.7及声明的Nemo二进制工件取入忽略目录`.build/`；未下载说话人模型权重、未处理真实录音。
+更新日期：2026-11-10。当前阶段：通用转写、环境声事件核心、匿名说话人时间线、候选对齐及FluidAudio v0.17.7离线适配器已实现；新增身份库跨平台数据骨架、整合状态校验与模块断点续跑。Mac历史验证为`swift build`通过、`swift test` 32项通过；本轮Linux `swift build`与`swift test`通过，共54项测试。SwiftPM解析时将FluidAudio 0.17.7及声明的Nemo二进制工件取入忽略目录`.build/`；未下载说话人模型权重、未处理真实录音。
 
-本轮 `stage6-unified-output` Linux 合成验证已补齐统一候选逐字稿、run-manifest、覆盖缺口和首中尾抽样、原子写入失败测试，以及 `scripts/mac-verify.sh`。最终 `swift build` 通过，`swift test` 共54项通过；脚本报告见`reports/mac-verify.md`。Apple 框架与 Mac 实机流程仍未由 Linux 验证。
+本轮 `stage6-unified-output` Linux 合成验证已补齐统一候选逐字稿、run-manifest、覆盖缺口和首中尾抽样、原子写入失败测试，以及 `scripts/mac-verify.sh`。最终 `swift build` 通过，`swift test` 共54项通过；脚本默认报告写入`/tmp/soundlog-mac-verify.md`。Apple 框架与 Mac 实机流程仍未由 Linux 验证。
 
 ## 目标与边界
 
@@ -38,7 +38,7 @@
 - 本轮为候选对齐纯函数新增5项合成测试：时间重叠候选、多说话人候选、无重叠未匹配、源哈希不一致拒绝、录音起点不一致拒绝。
 - 新增Core身份库骨架：样本以原文件路径/时间范围/源哈希引用；add与split均清除预填姓名、确认标志及伪造的确认/改名历史，新登记只有显式确认后才绑定姓名；rename仅允许已确认登记。保存依据、模型与引擎版本及创建/确认/拆分/合并/改名/撤销历史；只匹配确认且未撤销登记，结果提供unknown和非概率原始相似度。真实身份向量/样本未写入仓库，身份库运行目录已忽略。合成身份测试7项通过（含 split/rename 确认约束）。
 - 新增整合产物时间范围和覆盖校验、共享可序列化模块状态及续跑判定。声音事件、说话人分离及候选对齐只有在完整产物存在且源哈希、引擎和必要参数指纹一致时复用，否则重跑；Linux对不支持模块写明unsupported。对应合成测试3项通过。
-- 本轮Linux原始Package manifest下`swift build`及`swift test`通过，共47项测试（相对此前32项新增15项合成测试；本轮确认绕过返工后再增3项）。SwiftPM将FluidAudio 0.17.7与Nemo工件取入`.build/`；未下载说话人模型、未写入真实声纹。
+- 本轮Linux原始Package manifest下`swift build`及`swift test`通过，共54项测试。SwiftPM将FluidAudio 0.17.7与Nemo工件取入`.build/`；未下载说话人模型、未写入真实声纹。
 - [六阶段执行计划](.hermes/plans/2026-11-09_144613-soundlog.md)及[结构化会话归档](记录/会话归档/2026-11-09-需求调研与实施规划.md)已保存；Basic Memory摘要通过连接工具写入并读回，标识见README.md。
 
 ## 未实施／待决定

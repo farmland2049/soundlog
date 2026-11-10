@@ -60,13 +60,13 @@ import SoundlogCore
                         let engine = AppleSpeechEngine(localeIdentifier: locale)
                         let outcomes = await TranscriptionRun(engine: engine).process(files: [file], runDirectory: run, parameters: ["locale": locale])
                         if let result = outcomes.first, !result.failed { try record("transcription", "completed", nil, transcriptionFingerprint) }
-                        else { anyFailed = true; try record("transcription", "failed", "转写管线失败；详情请查看同目录 status.json") }
+                        else { anyFailed = true; try record("transcription", "failed", "转写管线失败；详情请查看同目录 status.json", transcriptionFingerprint) }
                     } else {
-                        anyFailed = true; try record("transcription", "unsupported", "需要 macOS 26 或更高版本")
+                        anyFailed = true; try record("transcription", "unsupported", "需要 macOS 26 或更高版本", transcriptionFingerprint)
                     }
                     }
                     #else
-                    anyFailed = true; try record("transcription", "unsupported", "Speech/AVFoundation 不可用")
+                    anyFailed = true; try record("transcription", "unsupported", "Speech/AVFoundation 不可用", transcriptionFingerprint)
                     #endif
 
                     let soundFingerprint = ResumeFingerprint(sourceSHA256: hash, engine: "apple-sound-analysis-version1", parameters: ["confidenceThreshold": String(diarizationParameters.confidenceThreshold), "minimumEventDurationSeconds": String(diarizationParameters.minimumEventDurationSeconds), "mergeGapSeconds": String(diarizationParameters.mergeGapSeconds)])
@@ -79,13 +79,13 @@ import SoundlogCore
                     do {
                         _ = try await SoundEventPipeline(engine: AppleSoundEventEngine()).run(file: file, runDirectory: output, parameters: diarizationParameters)
                         try record("soundEvents", "completed", nil, soundFingerprint)
-                    } catch { anyFailed = true; try record("soundEvents", "failed", String(describing: error)) }
+                    } catch { anyFailed = true; try record("soundEvents", "failed", String(describing: error), soundFingerprint) }
                     #else
-                    anyFailed = true; try record("soundEvents", "unsupported", "SoundAnalysis/AVFoundation 不可用")
+                    anyFailed = true; try record("soundEvents", "unsupported", "SoundAnalysis/AVFoundation 不可用", soundFingerprint)
                     #endif
                     }
                     #else
-                    anyFailed = true; try record("soundEvents", "unsupported", "SoundAnalysis/AVFoundation 不可用")
+                    anyFailed = true; try record("soundEvents", "unsupported", "SoundAnalysis/AVFoundation 不可用", soundFingerprint)
                     #endif
 
                     let speakerFingerprint = ResumeFingerprint(sourceSHA256: hash, engine: "FluidAudio.OfflineVBx@0.17.7", parameters: [:])
@@ -98,13 +98,13 @@ import SoundlogCore
                     do {
                         _ = try await SpeakerTimelinePipeline(engine: FluidAudioSpeakerEngine()).run(file: file, runDirectory: output)
                         try record("speakerDiarization", "completed", nil, speakerFingerprint)
-                    } catch { anyFailed = true; try record("speakerDiarization", "failed", String(describing: error)) }
+                    } catch { anyFailed = true; try record("speakerDiarization", "failed", String(describing: error), speakerFingerprint) }
                     #else
-                    anyFailed = true; try record("speakerDiarization", "unsupported", "FluidAudio 仅支持 macOS")
+                    anyFailed = true; try record("speakerDiarization", "unsupported", "FluidAudio 仅支持 macOS", speakerFingerprint)
                     #endif
                     }
                     #else
-                    anyFailed = true; try record("speakerDiarization", "unsupported", "FluidAudio 仅支持 macOS")
+                    anyFailed = true; try record("speakerDiarization", "unsupported", "FluidAudio 仅支持 macOS", speakerFingerprint)
                     #endif
 
                     let alignmentFingerprint = ResumeFingerprint(sourceSHA256: hash, engine: "temporal_overlap_candidates", parameters: ["transcription": options.parameters["locale"] ?? "zh-CN", "diarization": speakerFingerprint.engine])
@@ -132,9 +132,10 @@ import SoundlogCore
                         for ext in ["md", "txt"] {
                             let url = output.appendingPathComponent("transcript-with-speaker-candidates.\(ext)")
                             do {
-                                try AtomicFile.write(Data(UnifiedOutput.renderTranscript(document, format: ext).utf8), to: url)
+                                let unifiedFingerprint = ResumeFingerprint(sourceSHA256: hash, engine: "unified-candidate-renderer-v1", parameters: ["format": ext])
+                                try UnifiedOutput.writeTranscript(document, format: ext, to: url, status: &status, statusURL: statusURL, fingerprint: unifiedFingerprint, encoder: encoder)
                                 artifactURLs["transcript-\(ext)"] = url
-                            } catch { anyFailed = true; try record("unifiedTranscript", "failed", String(describing: error)) }
+                            } catch { anyFailed = true }
                         }
                     } else {
                         try record("unifiedTranscript", "skipped", "没有可用候选对齐结果")
@@ -169,7 +170,8 @@ import SoundlogCore
                         }
                         if key == "speaker-aligned-transcript.json", let doc = try? JSONDecoder().decode(SpeakerAlignedTranscriptDocument.self, from: data) {
                             return (key, doc.segments.map { segment in
-                                let candidates = segment.speakerCandidates.isEmpty ? "未匹配" : segment.speakerCandidates.joined(separator: "、")
+                                let labels = UnifiedOutput.candidateLabels(segment)
+                                let candidates = labels.isEmpty ? "未匹配" : labels.joined(separator: "、")
                                 return "\(segment.absoluteStartLocal): [\(candidates)] \(segment.text)"
                             })
                         }
@@ -178,12 +180,15 @@ import SoundlogCore
                         }
                         return nil
                     })
-                    try record("runManifest", "completed")
                     if FileManager.default.fileExists(atPath: statusURL.path) { artifactURLs["processing-status"] = statusURL }
-                    let manifest = try UnifiedOutput.buildManifest(inputPath: file.path, sourceSHA256: hash, duration: duration, coverageRanges: ranges, modules: status.modules, samples: sampleMap, artifactURLs: artifactURLs, baseDirectory: output)
                     do {
+                        let manifest = try UnifiedOutput.buildManifest(inputPath: file.path, sourceSHA256: hash, duration: duration, coverageRanges: ranges, modules: status.modules, samples: sampleMap, artifactURLs: artifactURLs, baseDirectory: output)
                         try AtomicFile.write(try encoder.encode(manifest), to: output.appendingPathComponent("run-manifest.json"))
-                    } catch { anyFailed = true; try record("runManifest", "failed", String(describing: error)) }
+                        try record("runManifest", "completed", nil, ResumeFingerprint(sourceSHA256: hash, engine: "run-manifest-v1", parameters: [:]))
+                    } catch {
+                        anyFailed = true
+                        try? record("runManifest", "failed", String(describing: error), ResumeFingerprint(sourceSHA256: hash, engine: "run-manifest-v1", parameters: [:]))
+                    }
                     print("三类分析结束: \(output.path)")
                 }
                 if anyFailed { exit(1) }

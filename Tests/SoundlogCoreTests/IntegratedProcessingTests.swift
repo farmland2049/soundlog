@@ -30,13 +30,16 @@ final class IntegratedProcessingTests: XCTestCase {
     func testCandidateTranscriptShowsUnmatchedAndAllAnonymousCandidates() {
         let entries = [
             SpeakerAlignedTranscriptEntry(startOffsetSeconds: 0, endOffsetSeconds: 1, absoluteStartLocal: "2026-01-01T00:00:00.000", absoluteEndLocal: "2026-01-01T00:00:01.000", speakerCandidates: [], hasUnattributedOverlap: false, text: "无候选"),
-            SpeakerAlignedTranscriptEntry(startOffsetSeconds: 1, endOffsetSeconds: 2, absoluteStartLocal: "2026-01-01T00:00:01.000", absoluteEndLocal: "2026-01-01T00:00:02.000", speakerCandidates: ["speaker-2", "speaker-1"], hasUnattributedOverlap: false, text: "多候选")
+            SpeakerAlignedTranscriptEntry(startOffsetSeconds: 1, endOffsetSeconds: 2, absoluteStartLocal: "2026-01-01T00:00:01.000", absoluteEndLocal: "2026-01-01T00:00:02.000", speakerCandidates: ["speaker-2", "speaker-1"], hasUnattributedOverlap: true, text: "多候选"),
+            SpeakerAlignedTranscriptEntry(startOffsetSeconds: 2, endOffsetSeconds: 3, absoluteStartLocal: "2026-01-01T00:00:02.000", absoluteEndLocal: "2026-01-01T00:00:03.000", speakerCandidates: [], hasUnattributedOverlap: true, text: "未知重叠")
         ]
         let doc = SpeakerAlignedTranscriptDocument(schemaVersion: 1, sourcePath: "synthetic", sourceSHA256: "hash", recordingStartLocal: "2026-01-01T00:00:00.000", transcriptionEngine: "test", diarizationEngine: "test", alignmentMethod: "overlap", accuracyAssessment: "not_evaluated", segments: entries)
         let md = UnifiedOutput.renderTranscript(doc, format: "md")
         XCTAssertTrue(md.contains("说话人候选：未匹配"))
         XCTAssertTrue(md.contains("speaker-1、speaker-2"))
-        XCTAssertFalse(md.contains("Alice"))
+        XCTAssertTrue(md.contains("speaker-1、speaker-2、未知"))
+        XCTAssertTrue(md.contains("说话人候选：未知"))
+        XCTAssertTrue(md.contains("2026-01-01T00:00:01.000"))
     }
 
     func testCoverageReportsLeadingInteriorAndTrailingGaps() throws {
@@ -58,9 +61,19 @@ final class IntegratedProcessingTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let artifact = root.appendingPathComponent("sample.json")
         try Data("synthetic".utf8).write(to: artifact)
-        let manifest = try UnifiedOutput.buildManifest(inputPath: "synthetic.wav", sourceSHA256: "source", duration: nil, coverageRanges: [], modules: ["speaker": IntegratedModuleStatus(state: "failed", error: "model missing")], samples: [:], artifactURLs: ["sample": artifact], baseDirectory: root, generatedAt: "fixed")
+        let fingerprint = ResumeFingerprint(sourceSHA256: "source", engine: "engine-test", parameters: ["locale": "zh-CN"])
+        let modules = ["speaker": IntegratedModuleStatus(state: "failed", error: "model missing", fingerprint: fingerprint), "transcription": IntegratedModuleStatus(state: "unsupported", error: "platform", fingerprint: fingerprint)]
+        let manifest = try UnifiedOutput.buildManifest(inputPath: "synthetic.wav", sourceSHA256: "source", duration: 9, coverageRanges: [AudioTimeRange(startOffsetSeconds: 2, endOffsetSeconds: 4)], modules: modules, samples: ["sample": ["a", "b"]], artifactURLs: ["sample": artifact], baseDirectory: root, generatedAt: "fixed")
+        XCTAssertEqual(manifest.inputPath, "synthetic.wav")
+        XCTAssertEqual(manifest.sourceSHA256, "source")
+        XCTAssertEqual(manifest.generatedAt, "fixed")
         XCTAssertEqual(manifest.modules["speaker"]?.error, "model missing")
+        XCTAssertEqual(manifest.modules["speaker"]?.fingerprint, fingerprint)
+        XCTAssertEqual(manifest.modules["transcription"]?.state, "unsupported")
+        XCTAssertEqual(manifest.artifacts["sample"]?.path, "sample.json")
         XCTAssertEqual(manifest.artifacts["sample"]?.sha256, SHA256.digest(Data("synthetic".utf8)))
+        XCTAssertEqual(manifest.coverage?.coveredSeconds, 2)
+        XCTAssertEqual(manifest.samples["sample"]?.first, ["a", "b"])
     }
 
     func testFailedAtomicWriteLeavesNoTemporaryArtifact() throws {
@@ -81,14 +94,10 @@ final class IntegratedProcessingTests: XCTestCase {
         try Data().write(to: blocker)
         var status = IntegratedProcessingStatus(sourcePath: "synthetic", sourceSHA256: "hash")
         let target = blocker.appendingPathComponent("transcript.md")
-        do {
-            try AtomicFile.write(Data("synthetic".utf8), to: target)
-            XCTFail("Expected the destination write to fail")
-        } catch {
-            status.record("unifiedTranscript", state: "failed", error: String(describing: error))
-        }
         let statusURL = root.appendingPathComponent("status.json")
-        try AtomicFile.write(try JSONEncoder().encode(status), to: statusURL)
+        let entry = SpeakerAlignedTranscriptEntry(startOffsetSeconds: 0, endOffsetSeconds: 1, absoluteStartLocal: "2026-01-01T00:00:00.000", absoluteEndLocal: "2026-01-01T00:00:01.000", speakerCandidates: [], hasUnattributedOverlap: false, text: "test")
+        let doc = SpeakerAlignedTranscriptDocument(schemaVersion: 1, sourcePath: "synthetic", sourceSHA256: "hash", recordingStartLocal: entry.absoluteStartLocal, transcriptionEngine: "test", diarizationEngine: "test", alignmentMethod: "overlap", accuracyAssessment: "not_evaluated", segments: [entry])
+        XCTAssertThrowsError(try UnifiedOutput.writeTranscript(doc, format: "md", to: target, status: &status, statusURL: statusURL, fingerprint: ResumeFingerprint(sourceSHA256: "hash", engine: "renderer", parameters: ["format": "md"])))
         let saved = try JSONDecoder().decode(IntegratedProcessingStatus.self, from: Data(contentsOf: statusURL))
         XCTAssertEqual(saved.modules["unifiedTranscript"]?.state, "failed")
         XCTAssertFalse(saved.modules["unifiedTranscript"]?.error?.isEmpty ?? true)

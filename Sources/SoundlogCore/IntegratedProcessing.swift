@@ -83,6 +83,7 @@ public struct RunManifest: Codable, Equatable, Sendable {
     public let inputPath: String
     public let sourceSHA256: String
     public let audioDurationSeconds: Double?
+    /// Audio coverage derived from transcription ranges only.
     public let coverage: CoverageReport?
     public let modules: [String: IntegratedModuleStatus]
     public let artifacts: [String: ArtifactRecord]
@@ -95,6 +96,12 @@ public struct ArtifactRecord: Codable, Equatable, Sendable {
 }
 
 public enum UnifiedOutput {
+    public static func candidateLabels(_ entry: SpeakerAlignedTranscriptEntry) -> [String] {
+        var labels = entry.speakerCandidates.sorted()
+        if entry.hasUnattributedOverlap { labels.append("未知") }
+        return labels
+    }
+
     public static func wavDuration(data: Data) -> Double? {
         guard data.count >= 44, String(data: data[0..<4], encoding: .ascii) == "RIFF", String(data: data[8..<12], encoding: .ascii) == "WAVE" else { return nil }
         func u32(_ offset: Int) -> UInt32 { data[offset..<offset + 4].enumerated().reduce(0) { $0 | UInt32($1.element) << (8 * $1.offset) } }
@@ -112,11 +119,25 @@ public enum UnifiedOutput {
     /// Candidate labels remain anonymous IDs; identity names are deliberately not accepted.
     public static func renderTranscript(_ document: SpeakerAlignedTranscriptDocument, format: String) -> String {
         let lines = document.segments.map { entry -> String in
-            let candidates = entry.speakerCandidates.isEmpty ? "未匹配" : entry.speakerCandidates.sorted().joined(separator: "、")
+            let labels = candidateLabels(entry)
+            let candidates = labels.isEmpty ? "未匹配" : labels.joined(separator: "、")
             return "- [\(entry.absoluteStartLocal)] [说话人候选：\(candidates)] \(entry.text)"
         }
         if format == "txt" { return lines.map { $0.replacingOccurrences(of: "- [", with: "[") }.joined(separator: "\n") + (lines.isEmpty ? "" : "\n") }
         return "# 逐字稿（说话人均为时间重叠候选，未经身份确认）\n\n" + lines.joined(separator: "\n") + (lines.isEmpty ? "" : "\n")
+    }
+
+    /// Writes the unified transcript and persists its outcome in processing status.
+    public static func writeTranscript(_ document: SpeakerAlignedTranscriptDocument, format: String, to url: URL, status: inout IntegratedProcessingStatus, statusURL: URL, fingerprint: ResumeFingerprint, encoder: JSONEncoder = JSONEncoder()) throws {
+        do {
+            try AtomicFile.write(Data(renderTranscript(document, format: format).utf8), to: url)
+            status.record("unifiedTranscript", state: "completed", fingerprint: fingerprint)
+            try AtomicFile.write(try encoder.encode(status), to: statusURL)
+        } catch {
+            status.record("unifiedTranscript", state: "failed", error: String(describing: error), fingerprint: fingerprint)
+            try? AtomicFile.write(try encoder.encode(status), to: statusURL)
+            throw error
+        }
     }
 
     public static func coverageReport(ranges: [AudioTimeRange], duration: Double) throws -> CoverageReport {

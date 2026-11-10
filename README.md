@@ -28,9 +28,9 @@
 
 对文件执行匿名说话人分离：`swift run SoundlogCLI speaker-diarize --input <音频文件或目录> --output-dir <本机产出目录>`。每个输入生成 `speaker-timeline.json`，用文件名起始钟表时间映射绝对时间，不添加时区。编号仅在单个文件内有效，不是身份；当前示例运行的准确性尚未人工评价。
 
-Mac 一键合成验证：`bash scripts/mac-verify.sh`。脚本依次运行 `swift build`、`swift test`，生成 1 秒静音 WAV 并调用 `process`，把版本、测试数及各模块状态写到 `reports/mac-verify.md`。Linux 也可执行；苹果 Speech、SoundAnalysis 与 FluidAudio 模块会标为 `unsupported`，`process` 因此返回非零，但验证报告仍会生成。脚本不使用真实录音、不下载模型；若 Mac 缺少说话人模型，状态会记录失败原因。可用 `SOUNDLOG_VERIFY_REPORT=/path/to/report.md` 指定报告位置。
+Mac 一键合成验证：`bash scripts/mac-verify.sh`。脚本依次运行 `swift build`、`swift test`，生成 1 秒静音 WAV 并调用 `process`，把版本、测试数及各模块状态写到 `/tmp/soundlog-mac-verify.md`；可用 `SOUNDLOG_VERIFY_REPORT=/path/to/report.md` 指定位置。Linux 也可执行，报告按实际结果记录模块状态和退出码。脚本不使用真实录音、不下载模型；若 Mac 缺少说话人模型，状态会记录失败原因。
 
-`process` 会额外生成 `transcript-with-speaker-candidates.md/.txt` 和 `run-manifest.json`。稿件中的说话人标签是匿名时间重叠候选，不代表身份确认；无候选显示“未匹配”。清单记录源哈希、模块状态/指纹、产物哈希、覆盖缺口和首中尾抽样。当前总时长读取覆盖 WAV；其他容器若无法从已有结果确定总时长，会将总时长与覆盖报告留空。
+`process` 会额外生成 `transcript-with-speaker-candidates.md/.txt` 和 `run-manifest.json`。稿件中的说话人标签是匿名时间重叠候选，不代表身份确认；无候选显示“未匹配”。清单记录源哈希、模块状态/指纹、产物哈希、覆盖缺口和首中尾抽样；其中“覆盖”仅指转写覆盖。当前总时长读取覆盖 WAV；其他容器若无法从已有结果确定总时长，会将总时长与覆盖报告留空。
 
 ## 技术边界
 
