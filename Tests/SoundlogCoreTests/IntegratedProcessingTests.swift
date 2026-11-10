@@ -34,6 +34,30 @@ final class IntegratedProcessingTests: XCTestCase {
         XCTAssertNotEqual(decision(nil), .reuse)
     }
 
+    func testSoundEventSidecarMaxLineBytesRejectsOverlongRowAndTriggersRerun() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
+        let summary = root.appendingPathComponent("sound-events.json"), sidecar = root.appendingPathComponent("sound-event-windows.ndjson")
+        try Data("{\"schemaVersion\":1,\"sourceSHA256\":\"hash\",\"engine\":\"engine\",\"parameters\":{},\"windowCount\":1}".utf8).write(to: summary)
+        let row = "{\"startOffsetSeconds\":0,\"endOffsetSeconds\":1,\"candidates\":[],\"classificationStatus\":\"unknown\"}\n"
+        try Data(row.utf8).write(to: sidecar)
+
+        XCTAssertNoThrow(try SoundEventSidecarValidator.validate(summaryURL: summary, sidecarURL: sidecar))
+
+        XCTAssertThrowsError(try SoundEventSidecarValidator.validate(summaryURL: summary, sidecarURL: sidecar, maxLineBytes: 30)) { error in
+            XCTAssertTrue(String(describing: error).contains("超出最大限制"))
+        }
+
+        let originalLimit = SoundEventSidecarValidator.maxLineBytes
+        defer { SoundEventSidecarValidator.maxLineBytes = originalLimit }
+        SoundEventSidecarValidator.maxLineBytes = 30
+
+        let fp = ResumeFingerprint(sourceSHA256: "hash", engine: "engine", parameters: [:])
+        let completed = IntegratedModuleStatus(state: "completed", fingerprint: fp)
+        let decision = IntegratedModuleResumePlanner.plan(expected: fp, status: completed, artifactURL: summary, sidecarURL: sidecar)
+        XCTAssertEqual(decision, .rerun("声音事件候选 sidecar 缺失或无效"))
+    }
+
     func testSkipCapturesResidentMemoryAndDiskFullVariantsAreRecognized() async throws {
         let statusURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: statusURL) }

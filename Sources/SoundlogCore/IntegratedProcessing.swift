@@ -110,7 +110,9 @@ public enum IntegratedModuleResumePlanner {
 
 /// Validates a sound-event sidecar without retaining the file in memory.
 public enum SoundEventSidecarValidator {
-    public static func validate(summaryURL: URL, sidecarURL: URL) throws {
+    public static let defaultMaxLineBytes: Int = 10 * 1024 * 1024
+    nonisolated(unsafe) public static var maxLineBytes: Int = defaultMaxLineBytes
+    public static func validate(summaryURL: URL, sidecarURL: URL, maxLineBytes: Int = Self.maxLineBytes) throws {
         let fields = try StreamingJSONTopLevelFields.read(summaryURL, wanted: ["windowCount"])
         guard let count = fields["windowCount"] as? Int, count >= 0 else { throw TranscriptionError.io("windowCount 缺失或无效") }
         let handle = try FileHandle(forReadingFrom: sidecarURL); defer { try? handle.close() }
@@ -123,7 +125,13 @@ public enum SoundEventSidecarValidator {
                     guard !line.isEmpty else { throw TranscriptionError.io("空 sidecar 行") }
                     _ = try decoder.decode(SoundClassificationWindow.self, from: line)
                     lines += 1; line.removeAll(keepingCapacity: true); endedWithNewline = true
-                } else { line.append(byte); endedWithNewline = false }
+                } else {
+                    line.append(byte)
+                    if line.count > maxLineBytes {
+                        throw TranscriptionError.io("sidecar 单行超出最大限制 (\(maxLineBytes) 字节)")
+                    }
+                    endedWithNewline = false
+                }
             }
         }
         guard sawByte, line.isEmpty, endedWithNewline, lines == count else { throw TranscriptionError.io("sidecar 行数或末行无效") }
