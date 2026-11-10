@@ -13,7 +13,7 @@ build_code=$?
 swift test >"$work/test.log" 2>&1
 test_code=$?
 
-python3 - "$work/input/20261110-120000-synthetic.wav" <<'PY'
+python3 - "$work/input/20261110120000.wav" <<'PY'
 import struct, sys, wave
 with wave.open(sys.argv[1], "wb") as f:
     f.setnchannels(1); f.setsampwidth(2); f.setframerate(16000)
@@ -22,9 +22,9 @@ PY
 
 process_code=0
 swift run SoundlogCLI process --input "$work/input" --output-dir "$work/output" --run-dir "$work/output/run" >"$work/process.log" 2>&1 || process_code=$?
-manifest="$work/output/run/$(python3 - "$work/input/20261110-120000-synthetic.wav" <<'PY'
+manifest="$work/output/run/$(python3 - "$work/input/20261110120000.wav" <<'PY'
 import hashlib,sys
-print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()[:16] + "-20261110-120000-synthetic.wav")
+print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()[:16] + "-20261110120000.wav")
 PY
 )/run-manifest.json"
 

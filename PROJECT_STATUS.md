@@ -1,14 +1,14 @@
 # soundlog 项目状态
 
-更新日期：2026-11-10。当前阶段：通用转写、环境声事件核心、匿名说话人时间线、候选对齐及FluidAudio v0.17.7离线适配器已实现；新增身份库跨平台数据骨架、整合状态校验与模块断点续跑。Mac历史验证为`swift build`通过、`swift test` 32项通过；本轮Linux `swift build`与`swift test`通过，共55项测试。SwiftPM解析时将FluidAudio 0.17.7及声明的Nemo二进制工件取入忽略目录`.build/`；未下载说话人模型权重、未处理真实录音。
+更新日期：2026-11-10。当前阶段：通用转写、环境声事件核心、匿名说话人时间线、候选对齐及FluidAudio v0.17.7离线适配器已实现；新增身份库跨平台数据骨架、整合状态校验与模块断点续跑。当前分支的 macOS `swift build`通过、`swift test` 55项通过；静音合成验证按预期记录`noSpeechDetected`，真实录音整合验证中三类模块及统一输出均完成。SwiftPM解析时将FluidAudio 0.17.7及声明的Nemo二进制工件取入忽略目录`.build/`；说话人模型从本机缓存加载。
 
-本轮 `stage6-unified-output` Linux 合成验证已补齐统一候选逐字稿、run-manifest、覆盖缺口和首中尾抽样、原子写入失败测试，以及 `scripts/mac-verify.sh`。最终 `swift build` 通过，`swift test` 共55项通过；脚本默认报告写入`/tmp/soundlog-mac-verify.md`。Apple 框架与 Mac 实机流程仍未由 Linux 验证。
+本轮 `stage6-unified-output` Linux 合成验证已补齐统一候选逐字稿、run-manifest、覆盖缺口和首中尾抽样、原子写入失败测试，以及 `scripts/mac-verify.sh`。Mac 实机一键验证再次确认 `swift build` 通过、`swift test` 共55项通过；脚本默认报告写入`/tmp/soundlog-mac-verify.md`。随后使用用户提供的 `20261107191809.mp3` 本机运行 `process`：转写94段、SoundAnalysis 870个窗口/982个事件、匿名说话人168段/4个聚类；94段对齐稿中77段有时间重叠候选、13段有多个候选、17段未匹配。所有模块和 run-manifest 状态为 `completed`，源哈希为`1d6119da2d0c4d84049d95d24b082b7379b1ace4d5b7f14cdcccbb8f60948f0c`。录音未改写，结果仅在被忽略的本机`产出/2026-11-10-stage6-merge-verification/`；内容与分人质量仍未经人工核验。验证脚本的合成输入文件名已修正为满足项目严格14位时间戳格式。
 
 ## 目标与边界
 
 以[需求说明](需求说明.md)为当前需求来源：根据文件名和录音生成逐字稿及绝对时间戳；识别环境音供后续推理；尽可能区分本人及他人的声音，覆盖自言自语、单人讲话与对谈。三类结果共享原时间轴，环境声识别和说话人区分不以成功转字为前提。场景自动推断不是本轮三项核心功能的必做交付。
 
-公开仓库为[farmland2049/soundlog](https://github.com/farmland2049/soundlog)，本机`main`已同步到公开提交`9dabe462f2f1fc4e073068cb605e7627e0e9f432`。公开内容限项目说明、调研综述和实现资料；录音、逐字稿、迁移日志及本机工具不公开。
+公开仓库为[farmland2049/soundlog](https://github.com/farmland2049/soundlog)。本轮工作在`stage6-unified-output`上完成本机验证，随后直接合并至`main`；公开内容限项目说明、调研综述和实现资料，录音、逐字稿、迁移日志及本机工具不公开。
 
 用户已明确授权按六阶段计划实施及安装固定版本 FluidAudio/说话人模型。未获当次授权不上传录音、不登记本人或他人身份；人工听音核验暂缓。
 
@@ -54,7 +54,7 @@
 
 ## 下一步
 
-下一步在Mac上验证本轮Core改动、模块续跑和身份库结构；之后再考虑真实身份样本（须用户明确确认）及后续录音稳定性。人工听音暂缓，识别准确性继续标为未核验。本轮未下载说话人模型权重、未处理真实录音、未创建真实声纹、未人工听音、未推送。Linux验证时SwiftPM已将FluidAudio声明的Nemo二进制工件取入忽略的`.build/`（约197 MB）。
+本轮Core改动、模块整合和续跑状态已完成Mac合成验证及本地录音端到端验证。后续可在不公开本地产物的前提下继续验证其他录音格式与稳定性；真实身份样本须用户明确确认，人工听音核验仍按用户决定暂缓。识别准确性继续标为未核验。Linux验证时SwiftPM已将FluidAudio声明的Nemo二进制工件取入忽略的`.build/`（约197 MB）。
 
 ## 验收与证据
 
