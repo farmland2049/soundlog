@@ -96,7 +96,12 @@ public enum InputEnumerator {
         let urls = try fm.contentsOfDirectory(at: input, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
         return urls.filter { audioExtensions.contains($0.pathExtension.lowercased()) }.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
     }
-    public static func manifest(at input: URL) throws -> [SourceManifestEntry] { try files(at: input).map { SourceManifestEntry(path: $0.path, sha256: try SHA256.file($0)) } }
+    public static func manifest(at input: URL) throws -> [SourceManifestEntry] {
+        try files(at: input).map { file in
+            let hash = (try? SHA256.file(file)) ?? "failed"
+            return SourceManifestEntry(path: file.path, sha256: hash)
+        }
+    }
 }
 
 public struct ResumeFingerprint: Codable, Equatable, Sendable {

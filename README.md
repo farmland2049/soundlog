@@ -32,6 +32,49 @@ Mac 一键合成验证：`bash scripts/mac-verify.sh`。脚本依次运行 `swif
 
 `process` 会额外生成 `transcript-with-speaker-candidates.md/.txt` 和 `run-manifest.json`。稿件中的说话人标签是匿名时间重叠候选，不代表身份确认；无候选显示“未匹配”。清单记录源哈希、模块状态/指纹、产物哈希、覆盖缺口和首中尾抽样；其中“覆盖”仅指转写覆盖。当前从 WAV、MP3、M4A 容器读取时长：WAV读取data chunk，MP3优先使用Xing/Info或VBRI帧数并按整数样本数扫描回退，M4A读取mvhd/mdhd。损坏或不支持的输入会在清单中保留失败原因并将时长及覆盖报告置空。MP3帧扫描按采样率累计整数样本数，避免长文件的浮点累加漂移。
 
+每次 `process` 批量运行结束均在运行目录下生成 `<运行目录>/记录/整理验收.json`，汇总运行时间、输入路径、是否 mock、文件总数、成功数、失败数、每个文件状态及失败原因。整批有文件失败时 CLI 返回非零退出码，但验收记录与已完成产物照样写出。
+
+Linux 开发或无原生模型环境下，可通过环境变量 `SOUNDLOG_MOCK_ENGINES=1` 或 CLI 参数 `--param engines=mock` 开启 Mock 模式。开启时使用 Mock 假引擎运行转写、声音分类和说话人分离（产物引擎标识包含 `mock`），Mock 引擎会真实读取并校验音频文件容器和时长，损坏或无法读取时如实报错失败。不开 mock 时行为与原生一致（Linux 记录 unsupported，Mac 使用真引擎）。
+
+## Mac 上批量导入测试
+
+在 Mac 实机上批量处理录音文件的完整步骤如下：
+
+### 1. 编译 release 版本
+
+```bash
+swift build -c release
+```
+编译产物位于 `.build/release/SoundlogCLI`。
+
+### 2. 首次安装离线说话人模型（仅需执行一次）
+
+```bash
+.build/release/SoundlogCLI speaker-models install
+```
+该命令会自动从固定模型仓库下载并校验权重文件至本机缓存，后续运行无需联网。
+
+### 3. 处理整个录音文件夹
+
+将需要处理的录音（支持 wav/mp3/m4a 等格式，文件名格式推荐类似 `20261110120000.wav`）放在一个文件夹中（例如 `~/Recordings`），运行：
+
+```bash
+.build/release/SoundlogCLI process --input ~/Recordings --output-dir ~/Output
+```
+程序会按字母顺序逐个处理其中所有音频文件。若遇到损坏、不可读或无法解析时长的坏文件，会记录失败原因并自动继续处理下一个文件，不会中断整批流程。
+
+### 4. 查看结果与验收记录
+
+每次运行会在输出根目录下生成独立的运行目录（如 `~/Output/run-2026-11-10T18-00-00Z-xxxxxxxx/`）：
+- **全量验收清单**：查看 `<运行目录>/记录/整理验收.json`，内含文件总数、成功数、失败数、每个文件的路径/状态/失败原因及各模块状态。
+- **单个文件结果**：每个文件在 `<运行目录>/<hash前16位>-<文件名>/` 目录下生成：
+  - `raw.json`、`transcript.md`（原始转写与时间戳文本）
+  - `sound-events.json`、`sound-event-windows.ndjson`（环境声音事件摘要与流式候选明细）
+  - `speaker-timeline.json`（匿名说话人时间线）
+  - `speaker-aligned-transcript.json/.md/.txt`（候选说话人对齐逐字稿）
+  - `run-manifest.json`（运行清单与指标）
+- **失败排查**：当处理未完全成功时，先看 `<运行目录>/记录/整理验收.json` 确定哪些文件失败及原因；需要看底层详情时，查看对应文件目录下的 `processing-status.json`（包含各模块的具体错误信息与底层系统错误码）。
+
 ## 技术边界
 
 苹果原生转写、声音分类及 FluidAudio 说话人分离均已有本机实跑；识别结果仍未经人工抽查，不承诺识别准确率或处理速度。声音分类候选不等于已确认的地点、活动或现场/外放判断。
