@@ -1,6 +1,6 @@
 # soundlog 项目状态
 
-更新日期：2026-11-10。当前阶段：通用转写、环境声事件核心、匿名说话人时间线、候选对齐及FluidAudio v0.17.7离线适配器已实现；新增身份库跨平台数据骨架、整合状态校验与模块断点续跑。stage7 当前 Linux x86_64 / Swift 6.1.2 `swift build`通过，`swift test`共65项通过；`bash scripts/mac-verify.sh`已在 Linux 完整运行。此次没有在 Mac 上验证，Apple/FluidAudio 代码仍受平台条件编译保护。SwiftPM解析时将FluidAudio 0.17.7及声明的Nemo二进制工件取入忽略目录`.build/`；本轮未下载模型权重。
+更新日期：2026-11-10。当前阶段：通用转写、环境声事件核心、匿名说话人时间线、候选对齐及FluidAudio v0.17.7离线适配器已实现；新增身份库跨平台数据骨架、整合状态校验与模块断点续跑。stage7 当前 Linux x86_64 / Swift 6.1.2 `swift build`通过，`swift test`共67项通过；`bash scripts/mac-verify.sh`已在 Linux 完整运行。此次没有在 Mac 上验证，Apple/FluidAudio 代码仍受平台条件编译保护。SwiftPM解析时将FluidAudio 0.17.7及声明的Nemo二进制工件取入忽略目录`.build/`；本轮未下载模型权重。
 
 本轮 `stage6-unified-output` Linux 合成验证已补齐统一候选逐字稿、run-manifest、覆盖缺口和首中尾抽样、原子写入失败测试，以及 `scripts/mac-verify.sh`。Mac 实机一键验证再次确认 `swift build` 通过、`swift test` 共55项通过；脚本默认报告写入`/tmp/soundlog-mac-verify.md`。随后使用用户提供的 `20261107191809.mp3` 本机运行 `process`：转写94段、SoundAnalysis 870个窗口/982个事件、匿名说话人168段/4个聚类；94段对齐稿中77段有时间重叠候选、13段有多个候选、17段未匹配。所有模块和 run-manifest 状态为 `completed`，源哈希为`1d6119da2d0c4d84049d95d24b082b7379b1ace4d5b7f14cdcccbb8f60948f0c`。录音未改写，结果仅在被忽略的本机`产出/2026-11-10-stage6-merge-verification/`；内容与分人质量仍未经人工核验。验证脚本的合成输入文件名已修正为满足项目严格14位时间戳格式。
 
@@ -68,7 +68,7 @@
 - 性能清单记录每模块 `wallClockSeconds` 和 `execution`（recomputed、reuse、skip 等），以及 process 墙钟和 `getrusage` 峰值内存；峰值统一另记字节，`ruMaxRSSUnit` 明示 Linux 原始值单位 KB、macOS 原始值单位 bytes。只记录测量值，不写性能结论。
 - 共享模块执行边界将可注入引擎/写盘错误持久化为 failed，其他模块可继续且运行清单仍可写出；原子写失败不留下半截目标文件。恢复继续使用源哈希、引擎/参数指纹和产物校验决定 reuse 或重跑。测试为假模型缺失、后续模块成功、原子产物写失败及清单保留状态。
 - 合成媒体测试包括 CBR MP3、Xing MP3、ID3v2 前缀、截断/垃圾输入及 M4A mvhd；文件名测试由 `RecordingStart` 验证脚本的 `20261110120000.wav`。`mac-verify.sh` 增加直接调用该项目解析器测试。
-- Linux 实际结果：`swift build` 通过；`swift test` 65 项通过；`bash scripts/mac-verify.sh` 退出码 0，报告记录测试数 65，合成 process 的 Apple/FluidAudio 模块为 unsupported（预期平台限制），process 退出码 1。脚本结束后仓库未生成文件。
+- 本轮 stage7 结果：Linux `swift build` 通过；`swift test` 67 项通过；`bash scripts/mac-verify.sh` 退出码 0，合成 process 的 Apple/FluidAudio 模块为 unsupported（预期平台限制），process 退出码 1。四个 process 模块现由 IntegratedModuleExecutor 执行/续跑并传入各自产物路径；测试覆盖真实 executor 的首次执行、复用、产物损坏和参数变化。清单 `performance.wallClockSeconds` 在写清单前采样并以 `wallClockExcludesManifestWrite: true` 明示不含清单写盘；清单写盘成功后，`processing-status.json` 写入 `runWallClockSecondsIncludingManifestWrite`。该状态文件不纳入 artifacts 哈希。脚本结束后仓库未生成文件。
 - Mac 编译/测试、Apple 模块性能、FluidAudio 模型缺失实机验证及真实 M4A 变体尚未验证。所有本轮测试输入为代码生成的合成字节/1 秒静音 WAV。
 
 - [文件迁移清单](记录/文件迁移清单.json)：原路径、现路径、每个文件的字节数、SHA-256及权限；包含兼容链接状态。
@@ -76,4 +76,4 @@
 - 原有实验与调研原文留在各自目录，属于历史证据，不自动代表当前可复现环境。
 
 
-**stage7 修复进展（2026-11-10）**：本轮完成 SHA-256 增量哈希与约 1 MiB 分块文件读取；音频时长文件入口改为 FileHandle 按偏移读取，覆盖 MP3 帧扫描与 Xing/VBRI 早退、M4A atom 和 WAV chunk。当前 Linux `swift test` 共66项通过。
+**stage7 修复进展（2026-11-10）**：本轮完成 SHA-256 增量哈希与约 1 MiB 分块文件读取；音频时长文件入口改为 FileHandle 按偏移读取，覆盖 MP3 帧扫描与 Xing/VBRI 早退、M4A atom 和 WAV chunk。当前 Linux `swift test` 共67项通过；本轮续跑执行器与清单/状态墙钟已完成，具体含清单不含写盘标志及 processing-status 含写盘总时长。

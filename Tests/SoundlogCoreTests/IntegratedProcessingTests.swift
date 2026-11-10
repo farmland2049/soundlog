@@ -1,7 +1,47 @@
 import XCTest
 @testable import SoundlogCore
 
+private final class ExecutorCallCounter: @unchecked Sendable { var value = 0 }
+
 final class IntegratedProcessingTests: XCTestCase {
+    func testExecutorRecomputesReusesAndInvalidatesThroughRealOperations() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let artifact = root.appendingPathComponent("raw.json")
+        let statusURL = root.appendingPathComponent("processing-status.json")
+        var status = IntegratedProcessingStatus(sourcePath: "synthetic.wav", sourceSHA256: "hash")
+        let calls = ExecutorCallCounter()
+        func operation(_ fingerprint: ResumeFingerprint) -> @Sendable () async throws -> Void {
+            { calls.value += 1; let value: [String: Any] = ["schemaVersion": 1, "sourceSHA256": fingerprint.sourceSHA256, "engine": fingerprint.engine, "parameters": fingerprint.parameters.mapValues { value in Double(value) ?? 0.3 }]; try JSONSerialization.data(withJSONObject: value).write(to: artifact) }
+        }
+        let first = ResumeFingerprint(sourceSHA256: "hash", engine: "fake-engine", parameters: ["threshold": "0.3"])
+        let result = await IntegratedModuleExecutor.execute(module: "transcription", fingerprint: first, artifactURL: artifact, status: &status, statusURL: statusURL, operation: operation(first))
+        XCTAssertTrue(result)
+        XCTAssertEqual(calls.value, 1)
+        XCTAssertEqual(status.modules["transcription"]?.execution, "recomputed")
+        XCTAssertNotNil(status.modules["transcription"]?.wallClockSeconds)
+
+        let reused = await IntegratedModuleExecutor.execute(module: "transcription", fingerprint: first, artifactURL: artifact, status: &status, statusURL: statusURL, operation: operation(first))
+        XCTAssertTrue(reused)
+        XCTAssertEqual(calls.value, 1)
+        XCTAssertEqual(status.modules["transcription"]?.execution, "reuse")
+        XCTAssertNotNil(status.modules["transcription"]?.wallClockSeconds)
+
+        try Data("broken".utf8).write(to: artifact)
+        let repaired = await IntegratedModuleExecutor.execute(module: "transcription", fingerprint: first, artifactURL: artifact, status: &status, statusURL: statusURL, operation: operation(first))
+        XCTAssertTrue(repaired)
+        XCTAssertEqual(calls.value, 2)
+        XCTAssertEqual(status.modules["transcription"]?.execution, "recomputed")
+        XCTAssertNotNil(status.modules["transcription"]?.wallClockSeconds)
+
+        let changed = ResumeFingerprint(sourceSHA256: "hash", engine: "fake-engine", parameters: ["threshold": "0.4"])
+        let changedResult = await IntegratedModuleExecutor.execute(module: "transcription", fingerprint: changed, artifactURL: artifact, status: &status, statusURL: statusURL, operation: operation(changed))
+        XCTAssertTrue(changedResult)
+        XCTAssertEqual(calls.value, 3)
+        XCTAssertEqual(status.modules["transcription"]?.execution, "recomputed")
+        XCTAssertNotNil(status.modules["transcription"]?.wallClockSeconds)
+    }
     func testRejectsInvalidTimesAndCoverage() throws {
         XCTAssertThrowsError(try AudioTimeRange(startOffsetSeconds: 1, endOffsetSeconds: 1))
         XCTAssertThrowsError(try AudioTimeRange(startOffsetSeconds: -1, endOffsetSeconds: 1))

@@ -22,8 +22,9 @@ public struct IntegratedProcessingStatus: Codable, Equatable, Sendable {
     public let sourceSHA256: String
     public var updatedAt: String
     public var modules: [String: IntegratedModuleStatus]
+    public var runWallClockSecondsIncludingManifestWrite: Double?
     public init(sourcePath: String, sourceSHA256: String, updatedAt: String = ISO8601DateFormatter().string(from: Date()), modules: [String: IntegratedModuleStatus] = [:]) {
-        schemaVersion = 1; self.sourcePath = sourcePath; self.sourceSHA256 = sourceSHA256; self.updatedAt = updatedAt; self.modules = modules
+        schemaVersion = 1; self.sourcePath = sourcePath; self.sourceSHA256 = sourceSHA256; self.updatedAt = updatedAt; self.modules = modules; self.runWallClockSecondsIncludingManifestWrite = nil
     }
     public mutating func record(_ module: String, state: String, error: String? = nil, fingerprint: ResumeFingerprint? = nil) {
         modules[module] = IntegratedModuleStatus(state: state, error: error, fingerprint: fingerprint)
@@ -75,8 +76,14 @@ public enum IntegratedArtifactValidator {
 /// Shared module boundary used by process and synthetic failure tests. A failed
 /// module is persisted without preventing its caller from running later modules.
 public enum IntegratedModuleExecutor {
+    public static func skip(module: String, state: String = "skipped", reason: String, fingerprint: ResumeFingerprint? = nil, status: inout IntegratedProcessingStatus, statusURL: URL, encoder: JSONEncoder = JSONEncoder()) {
+        status.record(module, state: state, error: reason, fingerprint: fingerprint)
+        status.modules[module]?.execution = "skip"
+        status.modules[module]?.wallClockSeconds = 0
+        try? AtomicFile.write(try encoder.encode(status), to: statusURL)
+    }
     @discardableResult
-    public static func execute(module: String, fingerprint: ResumeFingerprint, artifactURL: URL? = nil, status: inout IntegratedProcessingStatus, statusURL: URL, encoder: JSONEncoder = JSONEncoder(), operation: () async throws -> Void) async -> Bool {
+    public static func execute(module: String, fingerprint: ResumeFingerprint, artifactURL: URL? = nil, status: inout IntegratedProcessingStatus, statusURL: URL, encoder: JSONEncoder = JSONEncoder(), operation: @Sendable () async throws -> Void) async -> Bool {
         if let artifactURL, IntegratedModuleResumePlanner.plan(expected: fingerprint, status: status.modules[module], artifactURL: artifactURL) == .reuse {
             status.modules[module]?.execution = "reuse"
             status.modules[module]?.wallClockSeconds = 0
@@ -93,10 +100,10 @@ public enum IntegratedModuleExecutor {
         }
         do {
             try await operation()
+            let elapsed = Date().timeIntervalSince(started)
             status.record(module, state: "completed", fingerprint: fingerprint)
             status.modules[module]?.execution = "recomputed"
-            try AtomicFile.write(try encoder.encode(status), to: statusURL)
-            status.modules[module]?.wallClockSeconds = Date().timeIntervalSince(started)
+            status.modules[module]?.wallClockSeconds = elapsed
             try AtomicFile.write(try encoder.encode(status), to: statusURL)
             return true
         } catch {
@@ -165,8 +172,9 @@ public struct RunPerformance: Codable, Equatable, Sendable {
     public let peakMemoryBytes: UInt64
     public let peakMemorySource: String
     public let ruMaxRSSUnit: String
-    public init(wallClockSeconds: Double, peakMemoryBytes: UInt64, peakMemorySource: String, ruMaxRSSUnit: String) {
-        self.wallClockSeconds = wallClockSeconds; self.peakMemoryBytes = peakMemoryBytes; self.peakMemorySource = peakMemorySource; self.ruMaxRSSUnit = ruMaxRSSUnit
+    public let wallClockExcludesManifestWrite: Bool
+    public init(wallClockSeconds: Double, peakMemoryBytes: UInt64, peakMemorySource: String, ruMaxRSSUnit: String, wallClockExcludesManifestWrite: Bool = false) {
+        self.wallClockSeconds = wallClockSeconds; self.peakMemoryBytes = peakMemoryBytes; self.peakMemorySource = peakMemorySource; self.ruMaxRSSUnit = ruMaxRSSUnit; self.wallClockExcludesManifestWrite = wallClockExcludesManifestWrite
     }
 }
 

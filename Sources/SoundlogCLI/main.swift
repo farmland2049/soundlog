@@ -20,6 +20,7 @@ import SoundlogCore
         }
         do {
             let options = try CLIOptions.parse(arguments)
+            let processStart = Date()
             let files = try InputEnumerator.files(at: options.input)
             let run = options.runDirectory ?? options.outputRoot.appendingPathComponent("run-\(ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-") )-\(UUID().uuidString.prefix(8))", isDirectory: true)
             try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true)
@@ -28,7 +29,6 @@ import SoundlogCore
             try AtomicFile.write(try encoder.encode(manifest), to: run.appendingPathComponent("manifest.json"))
             if options.command == .manifest { print("清单已写入: \(run.path)"); return }
             if options.command == .process {
-                let processStart = Date()
                 let allowed = Set(["locale", "confidenceThreshold", "minimumEventDurationSeconds", "mergeGapSeconds"])
                 if let unknown = options.parameters.keys.first(where: { !allowed.contains($0) }) {
                     throw TranscriptionError.usage("process 不支持参数: \(unknown)")
@@ -44,96 +44,61 @@ import SoundlogCore
                     var status = (try? JSONDecoder().decode(IntegratedProcessingStatus.self, from: Data(contentsOf: statusURL)))
                         .flatMap { $0.sourceSHA256 == hash ? $0 : nil }
                         ?? IntegratedProcessingStatus(sourcePath: file.path, sourceSHA256: hash)
-                    var moduleStarts: [String: Date] = [:]
                     func record(_ module: String, _ state: String, _ error: String? = nil, _ fingerprint: ResumeFingerprint? = nil) throws {
                         status.record(module, state: state, error: error, fingerprint: fingerprint)
-                        if state == "running" { moduleStarts[module] = Date() }
-                        else if let start = moduleStarts.removeValue(forKey: module) {
-                            status.modules[module]?.wallClockSeconds = Date().timeIntervalSince(start)
-                            status.modules[module]?.execution = "recomputed"
-                        } else if state == "completed" {
-                            status.modules[module]?.execution = "recomputed"
-                            status.modules[module]?.wallClockSeconds = 0
-                        } else if ["failed", "unsupported", "skipped"].contains(state) {
-                            status.modules[module]?.execution = state == "skipped" ? "skip" : state
-                            status.modules[module]?.wallClockSeconds = 0
-                        }
                         try IntegratedArtifactValidator.validate(status: status)
-                        try AtomicFile.write(try encoder.encode(status), to: output.appendingPathComponent("processing-status.json"))
+                        try AtomicFile.write(try encoder.encode(status), to: statusURL)
                     }
                     let locale = options.parameters["locale"] ?? "zh-CN"
                     let transcriptionFingerprint = ResumeFingerprint(sourceSHA256: hash, engine: "apple-speech-analyzer", parameters: ["locale": locale])
                     let rawArtifact = output.appendingPathComponent("raw.json")
                     #if canImport(Speech) && canImport(AVFoundation)
-                    let transcriptionDecision = IntegratedModuleResumePlanner.plan(expected: transcriptionFingerprint, status: status.modules["transcription"], artifactURL: rawArtifact)
-                    if transcriptionDecision == .reuse { try record("transcription", "completed", nil, transcriptionFingerprint) }
-                    else {
-                    try record("transcription", "running", nil, transcriptionFingerprint)
-                    if #available(macOS 26.0, *) {
-                        let engine = AppleSpeechEngine(localeIdentifier: locale)
-                        let outcomes = await TranscriptionRun(engine: engine).process(files: [file], runDirectory: run, parameters: ["locale": locale])
-                        if let result = outcomes.first, !result.failed { try record("transcription", "completed", nil, transcriptionFingerprint) }
-                        else { anyFailed = true; try record("transcription", "failed", "转写管线失败；详情请查看同目录 status.json", transcriptionFingerprint) }
-                    } else {
-                        anyFailed = true; try record("transcription", "unsupported", "需要 macOS 26 或更高版本", transcriptionFingerprint)
+                    let transcriptionCompleted = await IntegratedModuleExecutor.execute(module: "transcription", fingerprint: transcriptionFingerprint, artifactURL: rawArtifact, status: &status, statusURL: statusURL, encoder: encoder) {
+                        if #available(macOS 26.0, *) {
+                            let engine = AppleSpeechEngine(localeIdentifier: locale)
+                            let outcomes = await TranscriptionRun(engine: engine).process(files: [file], runDirectory: run, parameters: ["locale": locale])
+                            guard let result = outcomes.first, !result.failed else { throw TranscriptionError.io("转写管线失败；详情请查看同目录 status.json") }
+                        } else { throw TranscriptionError.io("需要 macOS 26 或更高版本") }
                     }
-                    }
+                    if !transcriptionCompleted { anyFailed = true }
                     #else
-                    anyFailed = true; try record("transcription", "unsupported", "Speech/AVFoundation 不可用", transcriptionFingerprint)
+                    IntegratedModuleExecutor.skip(module: "transcription", state: "unsupported", reason: "Speech/AVFoundation 不可用", fingerprint: transcriptionFingerprint, status: &status, statusURL: statusURL, encoder: encoder)
+                    anyFailed = true
                     #endif
 
                     let soundFingerprint = ResumeFingerprint(sourceSHA256: hash, engine: "apple-sound-analysis-version1", parameters: ["confidenceThreshold": String(diarizationParameters.confidenceThreshold), "minimumEventDurationSeconds": String(diarizationParameters.minimumEventDurationSeconds), "mergeGapSeconds": String(diarizationParameters.mergeGapSeconds)])
                     let soundArtifact = output.appendingPathComponent("sound-events.json")
                     #if canImport(SoundAnalysis) && canImport(AVFoundation)
-                    let soundDecision = IntegratedModuleResumePlanner.plan(expected: soundFingerprint, status: status.modules["soundEvents"], artifactURL: soundArtifact)
-                    if soundDecision == .reuse { try record("soundEvents", "completed", nil, soundFingerprint) } else {
-                    try record("soundEvents", "running", nil, soundFingerprint)
-                    #if canImport(SoundAnalysis) && canImport(AVFoundation)
-                    do {
+                    let soundCompleted = await IntegratedModuleExecutor.execute(module: "soundEvents", fingerprint: soundFingerprint, artifactURL: soundArtifact, status: &status, statusURL: statusURL, encoder: encoder) {
                         _ = try await SoundEventPipeline(engine: AppleSoundEventEngine()).run(file: file, runDirectory: output, parameters: diarizationParameters)
-                        try record("soundEvents", "completed", nil, soundFingerprint)
-                    } catch { anyFailed = true; try record("soundEvents", "failed", String(describing: error), soundFingerprint) }
-                    #else
-                    anyFailed = true; try record("soundEvents", "unsupported", "SoundAnalysis/AVFoundation 不可用", soundFingerprint)
-                    #endif
                     }
+                    if !soundCompleted { anyFailed = true }
                     #else
-                    anyFailed = true; try record("soundEvents", "unsupported", "SoundAnalysis/AVFoundation 不可用", soundFingerprint)
+                    IntegratedModuleExecutor.skip(module: "soundEvents", state: "unsupported", reason: "SoundAnalysis/AVFoundation 不可用", fingerprint: soundFingerprint, status: &status, statusURL: statusURL, encoder: encoder)
+                    anyFailed = true
                     #endif
 
                     let speakerFingerprint = ResumeFingerprint(sourceSHA256: hash, engine: "FluidAudio.OfflineVBx@0.17.7", parameters: [:])
                     let speakerArtifact = output.appendingPathComponent("speaker-timeline.json")
                     #if os(macOS)
-                    let speakerDecision = IntegratedModuleResumePlanner.plan(expected: speakerFingerprint, status: status.modules["speakerDiarization"], artifactURL: speakerArtifact)
-                    if speakerDecision == .reuse { try record("speakerDiarization", "completed", nil, speakerFingerprint) } else {
-                    #if os(macOS)
-                    let completed = await IntegratedModuleExecutor.execute(module: "speakerDiarization", fingerprint: speakerFingerprint, status: &status, statusURL: statusURL, encoder: encoder) {
+                    let speakerCompleted = await IntegratedModuleExecutor.execute(module: "speakerDiarization", fingerprint: speakerFingerprint, artifactURL: speakerArtifact, status: &status, statusURL: statusURL, encoder: encoder) {
                         _ = try await SpeakerTimelinePipeline(engine: FluidAudioSpeakerEngine()).run(file: file, runDirectory: output)
                     }
-                    if !completed { anyFailed = true }
+                    if !speakerCompleted { anyFailed = true }
                     #else
-                    anyFailed = true; try record("speakerDiarization", "unsupported", "FluidAudio 仅支持 macOS", speakerFingerprint)
-                    #endif
-                    }
-                    #else
-                    anyFailed = true; try record("speakerDiarization", "unsupported", "FluidAudio 仅支持 macOS", speakerFingerprint)
+                    IntegratedModuleExecutor.skip(module: "speakerDiarization", state: "unsupported", reason: "FluidAudio 仅支持 macOS", fingerprint: speakerFingerprint, status: &status, statusURL: statusURL, encoder: encoder)
+                    anyFailed = true
                     #endif
 
-                    let alignmentFingerprint = ResumeFingerprint(sourceSHA256: hash, engine: "temporal_overlap_candidates", parameters: ["transcription": options.parameters["locale"] ?? "zh-CN", "diarization": speakerFingerprint.engine])
+                    let alignmentFingerprint = ResumeFingerprint(sourceSHA256: hash, engine: "temporal_overlap_candidates", parameters: ["transcription": locale, "diarization": speakerFingerprint.engine])
                     let alignmentArtifact = output.appendingPathComponent("speaker-aligned-transcript.json")
-                    if status.modules["transcription"]?.state == "completed",
-                       status.modules["speakerDiarization"]?.state == "completed" {
-                        let decision = IntegratedModuleResumePlanner.plan(expected: alignmentFingerprint, status: status.modules["speakerAlignment"], artifactURL: alignmentArtifact)
-                        if decision == .reuse { try record("speakerAlignment", "completed", nil, alignmentFingerprint) }
-                        else {
-                            try record("speakerAlignment", "running", nil, alignmentFingerprint)
-                            do {
-                                _ = try SpeakerTranscriptAlignmentPipeline().run(file: file, runDirectory: output)
-                                try record("speakerAlignment", "completed", nil, alignmentFingerprint)
-                            } catch { anyFailed = true; try record("speakerAlignment", "failed", String(describing: error), alignmentFingerprint) }
+                    if status.modules["transcription"]?.state == "completed", status.modules["speakerDiarization"]?.state == "completed" {
+                        let alignmentCompleted = await IntegratedModuleExecutor.execute(module: "speakerAlignment", fingerprint: alignmentFingerprint, artifactURL: alignmentArtifact, status: &status, statusURL: statusURL, encoder: encoder) {
+                            _ = try SpeakerTranscriptAlignmentPipeline().run(file: file, runDirectory: output)
                         }
+                        if !alignmentCompleted { anyFailed = true }
                     } else {
-                        try record("speakerAlignment", "skipped", "转写或说话人分离未完成")
+                        IntegratedModuleExecutor.skip(module: "speakerAlignment", reason: "转写或说话人分离未完成", fingerprint: alignmentFingerprint, status: &status, statusURL: statusURL, encoder: encoder)
                     }
                     // Render one user-facing transcript and a hash-indexed run manifest from
                     // whatever modules completed. A module failure never suppresses these.
@@ -195,9 +160,14 @@ import SoundlogCore
                     })
                     do {
                         let memory = ProcessPeakMemory.current()
-                        let performance = RunPerformance(wallClockSeconds: Date().timeIntervalSince(processStart), peakMemoryBytes: memory.bytes, peakMemorySource: memory.source, ruMaxRSSUnit: memory.unit)
-                        try UnifiedOutput.writeManifest(inputPath: file.path, sourceSHA256: hash, duration: duration, coverageRanges: ranges, modules: status.modules, samples: sampleMap, artifactURLs: artifactURLs, baseDirectory: output, to: output.appendingPathComponent("run-manifest.json"), encoder: encoder, durationMethod: durationInfo.method, durationError: durationInfo.error, performance: performance)
-                        try record("runManifest", "completed", nil, ResumeFingerprint(sourceSHA256: hash, engine: "run-manifest-v1", parameters: [:]))
+                        status.record("runManifest", state: "completed", fingerprint: ResumeFingerprint(sourceSHA256: hash, engine: "run-manifest-v1", parameters: [:]))
+                        status.modules["runManifest"]?.execution = "recomputed"
+                        status.modules["runManifest"]?.wallClockSeconds = Date().timeIntervalSince(processStart)
+                        let performance = RunPerformance(wallClockSeconds: Date().timeIntervalSince(processStart), peakMemoryBytes: memory.bytes, peakMemorySource: memory.source, ruMaxRSSUnit: memory.unit, wallClockExcludesManifestWrite: true)
+                        let manifestURL = output.appendingPathComponent("run-manifest.json")
+                        try UnifiedOutput.writeManifest(inputPath: file.path, sourceSHA256: hash, duration: duration, coverageRanges: ranges, modules: status.modules, samples: sampleMap, artifactURLs: artifactURLs, baseDirectory: output, to: manifestURL, encoder: encoder, durationMethod: durationInfo.method, durationError: durationInfo.error, performance: performance)
+                        status.runWallClockSecondsIncludingManifestWrite = Date().timeIntervalSince(processStart)
+                        try AtomicFile.write(try encoder.encode(status), to: statusURL)
                     } catch {
                         anyFailed = true
                         try? record("runManifest", "failed", String(describing: error), ResumeFingerprint(sourceSHA256: hash, engine: "run-manifest-v1", parameters: [:]))
