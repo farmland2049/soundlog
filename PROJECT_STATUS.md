@@ -76,4 +76,4 @@
 - 原有实验与调研原文留在各自目录，属于历史证据，不自动代表当前可复现环境。
 
 
-**stage7 修复进展（2026-11-10）**：已修复 MP3 合法帧后的 ID3v1/短尾部垃圾导致时长丢失；M4A 64 位 atom 长度在转为 `Int` 前检查范围和剩余边界；RSS 单位测试按 Linux/macOS 分别断言。当前 Linux 测试总数65项。已补 MPEG2/2.5、CRC、单声道及带大尾部 Xing 的文件前缀解析。仍未完成：SHA256.file 分块流式；非 Xing/VBRI 时长仍可能整文件映射；transcription/soundEvents/alignment 尚未接入 IntegratedModuleExecutor，也没有假引擎两次执行的续跑测试；CLI 真实 reuse 与刚跑完的 execution 标记、整次墙钟含写盘仍待修正。因此本轮阶段目标尚未全部验收。
+**stage7 修复进展（2026-11-10）**：本轮完成 SHA-256 增量哈希与约 1 MiB 分块文件读取；音频时长文件入口改为 FileHandle 按偏移读取，覆盖 MP3 帧扫描与 Xing/VBRI 早退、M4A atom 和 WAV chunk。当前 Linux `swift test` 共66项通过。

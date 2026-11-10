@@ -204,13 +204,106 @@ public enum UnifiedOutput {
     public static func audioDuration(file url: URL) throws -> AudioDuration {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
-        // Inspect a bounded prefix first. VBR headers are in the first MPEG frame,
-        // so large files with Xing/VBRI never need their tail mapped or read.
-        let prefix = try handle.read(upToCount: 64 * 1024) ?? Data()
-        if let mp3 = mp3Duration(data: prefix), mp3.method == "xing" || mp3.method == "vbri" {
-            return AudioDuration(seconds: mp3.seconds, method: mp3.method, error: nil)
+        let length = try handle.seekToEnd()
+        func read(_ offset: UInt64, _ count: Int) throws -> Data {
+            try handle.seek(toOffset: offset)
+            return try handle.read(upToCount: count) ?? Data()
         }
-        return audioDuration(data: try Data(contentsOf: url, options: [.mappedIfSafe]))
+        let head = try read(0, 12)
+        if head.count >= 12, String(data: head[0..<4], encoding: .ascii) == "RIFF", String(data: head[8..<12], encoding: .ascii) == "WAVE",
+           let duration = try wavDuration(fileLength: length, read: read) { return AudioDuration(seconds: duration, method: "wav-data-size", error: nil) }
+        if let mp3 = try mp3Duration(fileLength: length, read: read) { return AudioDuration(seconds: mp3.seconds, method: mp3.method, error: nil) }
+        if let mp4 = try mp4Duration(fileLength: length, read: read) { return AudioDuration(seconds: mp4, method: "mvhd/mdhd", error: nil) }
+        if head.prefix(3).elementsEqual(Data("ID3".utf8)) || head.count >= 2 && head[0] == 0xff && head[1] & 0xe0 == 0xe0 { return AudioDuration(seconds: nil, method: "failed", error: "MP3帧头或时长元数据无效/截断") }
+        if head.count >= 8, String(data: head[4..<8], encoding: .ascii) == "ftyp" { return AudioDuration(seconds: nil, method: "failed", error: "M4A中未找到有效mvhd/mdhd时长") }
+        return AudioDuration(seconds: nil, method: "unsupported", error: "不支持的音频容器或无法识别的内容")
+    }
+
+    private static func wavDuration(fileLength: UInt64, read: (UInt64, Int) throws -> Data) throws -> Double? {
+        var offset: UInt64 = 12, byteRate: UInt32?
+        while offset + 8 <= fileLength {
+            let h = try read(offset, 8); guard h.count == 8 else { return nil }
+            let id = String(data: h.prefix(4), encoding: .ascii) ?? ""
+            let size = UInt64(h[4..<8].enumerated().reduce(UInt32(0)) { $0 | UInt32($1.element) << (8 * $1.offset) })
+            guard size <= fileLength - offset - 8 else { return nil }
+            if id == "fmt ", size >= 16 {
+                let fmt = try read(offset + 8, 16); if fmt.count == 16 { byteRate = fmt[8..<12].enumerated().reduce(UInt32(0)) { $0 | UInt32($1.element) << (8 * $1.offset) } }
+            }
+            if id == "data", let byteRate, byteRate > 0 { return Double(size) / Double(byteRate) }
+            offset += 8 + size + (size % 2)
+        }
+        return nil
+    }
+
+    private static func mp3Duration(fileLength: UInt64, read: (UInt64, Int) throws -> Data) throws -> (seconds: Double, method: String)? {
+        var offset: UInt64 = 0
+        let first = try read(0, 10)
+        if first.count == 10, first.prefix(3).elementsEqual(Data("ID3".utf8)) {
+            guard first[6] < 128, first[7] < 128, first[8] < 128, first[9] < 128 else { return nil }
+            offset = 10 + (UInt64(first[6]) << 21 | UInt64(first[7]) << 14 | UInt64(first[8]) << 7 | UInt64(first[9]))
+            if first[5] & 0x10 != 0 { offset += 10 }
+            guard offset <= fileLength else { return nil }
+        }
+        let bitrates: [[Int]] = [[], [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320], [0,8,16,24,32,40,48,56,64,80,96,112,128,144,160]], rates = [44100,48000,32000]
+        var frames = 0, total = 0.0
+        while offset + 4 <= fileLength {
+            let b = try read(offset, 4); guard b.count == 4 else { break }
+            let h = UInt32(b[0]) << 24 | UInt32(b[1]) << 16 | UInt32(b[2]) << 8 | UInt32(b[3])
+            guard h & 0xffe00000 == 0xffe00000 else { if frames == 0 { offset += 1; continue }; break }
+            let version = Int((h >> 19) & 3), layer = Int((h >> 17) & 3), bi = Int((h >> 12) & 15), ri = Int((h >> 10) & 3)
+            guard version != 1, layer == 1, bi > 0, bi < 15, ri < 3 else { if frames == 0 { offset += 1; continue }; break }
+            let rate = rates[ri] / (version == 3 ? 1 : version == 2 ? 2 : 4), bitrate = bitrates[version == 3 ? 1 : 2][bi] * 1000
+            let frameLength = (version == 3 ? 144 : 72) * bitrate / rate + Int((h >> 9) & 1)
+            guard frameLength >= 24, UInt64(frameLength) <= fileLength - offset else { break }
+            if frames == 0 {
+                let mono = (h >> 6) & 3 == 3, side = version == 3 ? (mono ? 17 : 32) : (mono ? 9 : 17)
+                let xoff = offset + UInt64(4 + (h & 0x10000 == 0 ? 2 : 0) + side)
+                let x = try read(xoff, 16)
+                if x.count >= 12, x.prefix(4).elementsEqual(Data("Xing".utf8)) || x.count >= 12 && x.prefix(4).elementsEqual(Data("Info".utf8)) {
+                    let flags = x[4..<8].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+                    let count = x[8..<12].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+                    if flags & 1 != 0, count > 0 { return (Double(count) * Double(version == 3 ? 1152 : 576) / Double(rate), "xing") }
+                }
+                let v = try read(offset + 36, 18)
+                if v.count >= 18, v.prefix(4).elementsEqual(Data("VBRI".utf8)) {
+                    let count = v[14..<18].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+                    if count > 0 { return (Double(count) * Double(version == 3 ? 1152 : 576) / Double(rate), "vbri") }
+                }
+            }
+            frames += 1; total += Double(version == 3 ? 1152 : 576) / Double(rate); offset += UInt64(frameLength)
+        }
+        guard frames > 0 else { return nil }
+        if fileLength - offset == 128, try read(offset, 3).elementsEqual(Data("TAG".utf8)) { return (total, "frame-scan (ID3v1 skipped)") }
+        return (total, offset == fileLength ? "frame-scan" : "frame-scan (trailing garbage ignored)")
+    }
+
+    private static func mp4Duration(fileLength: UInt64, read: (UInt64, Int) throws -> Data) throws -> Double? {
+        func scan(_ lower: UInt64, _ upper: UInt64, _ depth: Int) throws -> Double? {
+            guard depth < 12 else { return nil }; var at = lower
+            while at + 8 <= upper {
+                let h = try read(at, 8); guard h.count == 8 else { return nil }
+                let size32 = UInt64(h[0..<4].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }), type = String(data: h[4..<8], encoding: .ascii) ?? ""
+                var header: UInt64 = 8, size = size32
+                if size32 == 1 {
+                    let ext = try read(at + 8, 8); guard ext.count == 8 else { return nil }
+                    size = ext.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }; header = 16
+                    guard size <= UInt64(Int.max) else { return nil }
+                } else if size32 == 0 { size = upper - at }
+                guard size >= header, size <= upper - at else { return nil }
+                if type == "mvhd" || type == "mdhd" {
+                    let p = at + header, v = try read(p, 32); guard !v.isEmpty else { return nil }
+                    let ver = v[0], so = ver == 1 ? 20 : 12, d = ver == 1 ? 24 : 16, need = d + (ver == 1 ? 8 : 4)
+                    guard v.count >= need else { return nil }
+                    let scale = v[so..<so+4].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }; guard scale > 0 else { return nil }
+                    let duration: UInt64 = ver == 1 ? v[d..<d+8].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) } : UInt64(v[d..<d+4].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) })
+                    if duration > 0 { return Double(duration) / Double(scale) }
+                }
+                if ["moov", "trak", "mdia"].contains(type), let result = try scan(at + header, at + size, depth + 1) { return result }
+                at += size
+            }
+            return nil
+        }
+        return try scan(0, fileLength, 0)
     }
 
     public static func audioDuration(data: Data) -> AudioDuration {
@@ -229,83 +322,21 @@ public enum UnifiedOutput {
     }
 
     private static func mp3Duration(data: Data) -> (seconds: Double, method: String)? {
-        var start = 0
-        if data.count >= 10, data[0..<3].elementsEqual(Data("ID3".utf8)) {
-            guard data[6] < 128, data[7] < 128, data[8] < 128, data[9] < 128 else { return nil }
-            let size = Int(data[6]) << 21 | Int(data[7]) << 14 | Int(data[8]) << 7 | Int(data[9])
-            start = 10 + size + ((data[5] & 0x10) != 0 ? 10 : 0)
-            guard start <= data.count else { return nil }
+        try? mp3Duration(fileLength: UInt64(data.count)) { offset, count in
+            guard offset <= UInt64(data.count) else { return Data() }
+            let start = Int(offset), end = min(data.count, start + count)
+            return start < end ? Data(data[start..<end]) : Data()
         }
-        let bitrates: [[Int]] = [[], [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320], [0,8,16,24,32,40,48,56,64,80,96,112,128,144,160]]
-        let rates = [44100,48000,32000]
-        var offset = start, frames = 0, summedDuration = 0.0, firstHeader: (Int, Int, Int, Int, Int)?
-        var metadataDuration: (seconds: Double, method: String)?
-        while offset + 4 <= data.count {
-            let h = UInt32(data[offset]) << 24 | UInt32(data[offset+1]) << 16 | UInt32(data[offset+2]) << 8 | UInt32(data[offset+3])
-            guard h & 0xffe00000 == 0xffe00000 else { if frames == 0 { offset += 1; continue }; break }
-            let version = Int((h >> 19) & 3), layer = Int((h >> 17) & 3), bitrateIndex = Int((h >> 12) & 15), rateIndex = Int((h >> 10) & 3)
-            guard version != 1, layer == 1, bitrateIndex > 0, bitrateIndex < 15, rateIndex < 3 else { if frames == 0 { offset += 1; continue }; break }
-            let sampleRate = rates[rateIndex] / (version == 3 ? 1 : version == 2 ? 2 : 4)
-            let bitrate = bitrates[version == 3 ? 1 : 2][bitrateIndex] * 1000
-            let padding = Int((h >> 9) & 1), frameLength = (version == 3 ? 144 : 72) * bitrate / sampleRate + padding
-            guard frameLength >= 24, offset + frameLength <= data.count else { break }
-            if firstHeader == nil {
-                firstHeader = (version, sampleRate, bitrate, Int((h >> 6) & 3), frameLength)
-                let mono = ((h >> 6) & 3) == 3
-                let sideInfo = version == 3 ? (mono ? 17 : 32) : (mono ? 9 : 17)
-                let xoff = offset + 4 + (h & 0x10000 == 0 ? 2 : 0) + sideInfo
-                if xoff + 16 <= offset + frameLength, data[xoff..<xoff+4].elementsEqual(Data("Xing".utf8)) || (xoff + 16 <= offset + frameLength && data[xoff..<xoff+4].elementsEqual(Data("Info".utf8))) {
-                    let flags = be32(data, xoff + 4)
-                    if flags & 1 != 0, xoff + 12 <= data.count {
-                        let count = be32(data, xoff + 8); if count > 0 { metadataDuration = (Double(count) * Double(version == 3 ? 1152 : 576) / Double(sampleRate), "xing") }
-                    }
-                }
-                let vbri = offset + 4 + 32
-                if metadataDuration == nil, vbri + 18 <= offset + frameLength, data[vbri..<vbri+4].elementsEqual(Data("VBRI".utf8)) {
-                    let count = be32(data, vbri + 14); if count > 0 { metadataDuration = (Double(count) * Double(version == 3 ? 1152 : 576) / Double(sampleRate), "vbri") }
-                }
-            }
-            frames += 1; summedDuration += Double(version == 3 ? 1152 : 576) / Double(sampleRate); offset += frameLength
-        }
-        if let metadataDuration { return (metadataDuration.seconds, metadataDuration.method) }
-        guard frames > 0 else { return nil }
-        // Once valid frames have been found, container trailers and a short
-        // damaged tail do not invalidate the duration already measured.
-        let tail = data[offset...]
-        let hasID3v1 = tail.count == 128 && tail.prefix(3).elementsEqual(Data("TAG".utf8))
-        return (summedDuration, hasID3v1 ? "frame-scan (ID3v1 skipped)" : (tail.isEmpty ? "frame-scan" : "frame-scan (trailing garbage ignored)"))
     }
 
     private static func be32(_ data: Data, _ i: Int) -> UInt32 { UInt32(data[i]) << 24 | UInt32(data[i+1]) << 16 | UInt32(data[i+2]) << 8 | UInt32(data[i+3]) }
 
     private static func mp4Duration(data: Data) -> Double? {
-        func scan(_ lower: Int, _ upper: Int, _ wanted: [String]) -> Double? {
-            var i = lower
-            while i + 8 <= upper {
-                let size32 = Int(be32(data, i)); let type = String(data: data[i+4..<i+8], encoding: .ascii) ?? ""
-                let header = size32 == 1 ? 16 : 8
-                let wideSize = size32 == 1 && i + 16 <= upper ? (UInt64(be32(data, i+8)) << 32 | UInt64(be32(data, i+12))) : UInt64(size32)
-                guard wideSize <= UInt64(Int.max) else { return nil }
-                let size = Int(wideSize)
-                guard size >= header, size <= upper - i else { return nil }
-                if wanted.contains(type) {
-                    let p = i + header
-                    if type == "mvhd" || type == "mdhd" {
-                        guard p + 20 <= i + size else { return nil }
-                        let version = data[p]
-                        let scaleOffset = p + (version == 1 ? 20 : 12), durationOffset = p + (version == 1 ? 24 : 16)
-                        guard durationOffset + (version == 1 ? 8 : 4) <= i + size else { return nil }
-                        let scale = be32(data, scaleOffset)
-                        let duration = version == 1 ? (UInt64(be32(data, durationOffset)) << 32 | UInt64(be32(data, durationOffset+4))) : UInt64(be32(data, durationOffset))
-                        if scale > 0, duration > 0 { return Double(duration) / Double(scale) }
-                    }
-                }
-                if ["moov", "trak", "mdia"].contains(type), let found = scan(i + header, i + size, ["mvhd", "mdhd"]) { return found }
-                i += size
-            }
-            return nil
+        try? mp4Duration(fileLength: UInt64(data.count)) { offset, count in
+            guard offset <= UInt64(data.count) else { return Data() }
+            let start = Int(offset), end = min(data.count, start + count)
+            return start < end ? Data(data[start..<end]) : Data()
         }
-        return scan(0, data.count, ["mvhd", "mdhd"])
     }
     public static func candidateLabels(_ entry: SpeakerAlignedTranscriptEntry) -> [String] {
         var labels = entry.speakerCandidates.sorted()

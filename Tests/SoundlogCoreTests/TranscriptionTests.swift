@@ -26,6 +26,14 @@ final class TranscriptionTests: XCTestCase {
         XCTAssertEqual(SHA256.digest(Data("abc".utf8)), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
     }
 
+    func testSHA256StreamsMultipleBlocksFromFile() throws {
+        let bytes = Data(repeating: 0x5a, count: 2_500_123)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try bytes.write(to: url)
+        XCTAssertEqual(try SHA256.file(url), SHA256.digest(bytes))
+    }
+
     func testResumeRequiresAllFingerprintFieldsToMatch() {
         let original = ResumeFingerprint(sourceSHA256: "a", engine: "e", parameters: ["x":"1"])
         XCTAssertTrue(original.mayReuse(original))
