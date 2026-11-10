@@ -56,7 +56,7 @@ import SoundlogCore
                     let transcriptionCompleted = await IntegratedModuleExecutor.execute(module: "transcription", fingerprint: transcriptionFingerprint, artifactURL: rawArtifact, status: &status, statusURL: statusURL, encoder: encoder) {
                         if #available(macOS 26.0, *) {
                             let engine = AppleSpeechEngine(localeIdentifier: locale)
-                            let outcomes = await TranscriptionRun(engine: engine).process(files: [file], runDirectory: run, parameters: ["locale": locale])
+                            let outcomes = await TranscriptionRun(engine: engine).process(files: [file], runDirectory: run, parameters: ["locale": locale], forceRerun: true)
                             guard let result = outcomes.first, !result.failed else { throw TranscriptionError.io("转写管线失败；详情请查看同目录 status.json") }
                         } else { throw TranscriptionError.io("需要 macOS 26 或更高版本") }
                     }
@@ -116,6 +116,9 @@ import SoundlogCore
                         }
                     } else {
                         try record("unifiedTranscript", "skipped", "没有可用候选对齐结果")
+                        status.modules["unifiedTranscript"]?.execution = "skip"
+                        status.modules["unifiedTranscript"]?.wallClockSeconds = 0
+                        try AtomicFile.write(try encoder.encode(status), to: statusURL)
                     }
                     let durationInfo = (try? UnifiedOutput.audioDuration(file: file)) ?? AudioDuration(seconds: nil, method: "failed", error: "无法读取输入")
                     let duration = durationInfo.seconds
@@ -132,9 +135,18 @@ import SoundlogCore
                         let url = output.appendingPathComponent(name)
                         if FileManager.default.fileExists(atPath: url.path) { artifactURLs[name] = url }
                     }
+                    let coverageStarted = Date()
                     if let duration, let coverage = try? UnifiedOutput.coverageReport(ranges: ranges, duration: duration), coverage.gaps.isEmpty {
                         try record("inputCoverage", "completed")
-                    } else if duration != nil { try record("inputCoverage", "incomplete", "覆盖存在缺口或无转写覆盖") }
+                        status.modules["inputCoverage"]?.execution = "recomputed"
+                        status.modules["inputCoverage"]?.wallClockSeconds = Date().timeIntervalSince(coverageStarted)
+                        try AtomicFile.write(try encoder.encode(status), to: statusURL)
+                    } else if duration != nil {
+                        try record("inputCoverage", "incomplete", "覆盖存在缺口或无转写覆盖")
+                        status.modules["inputCoverage"]?.execution = "skip"
+                        status.modules["inputCoverage"]?.wallClockSeconds = Date().timeIntervalSince(coverageStarted)
+                        try AtomicFile.write(try encoder.encode(status), to: statusURL)
+                    }
                     let sampleMap = Dictionary(uniqueKeysWithValues: artifactURLs.compactMap { key, url -> (String, [String])? in
                         guard let data = try? Data(contentsOf: url) else { return nil }
                         if key == "transcription-raw", let raw = try? JSONDecoder().decode(RawTranscription.self, from: data) {

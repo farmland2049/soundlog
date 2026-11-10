@@ -59,8 +59,11 @@ final class TranscriptionTests: XCTestCase {
         XCTAssertEqual(ResumePlanner.plan(expected: fp, statusURL: statusURL, rawURL: rawURL), .rerun("无记录"))
         let enc = JSONEncoder()
         try enc.encode(TranscriptionStatus(state: .completedWithText, fingerprint: fp)).write(to: statusURL)
-        XCTAssertEqual(ResumePlanner.plan(expected: fp, statusURL: statusURL, rawURL: rawURL), .rerun("产物缺失"))
+        XCTAssertEqual(ResumePlanner.plan(expected: fp, statusURL: statusURL, rawURL: rawURL), .rerun("产物缺失、无效或指纹不符"))
         try Data().write(to: rawURL)
+        XCTAssertEqual(ResumePlanner.plan(expected: fp, statusURL: statusURL, rawURL: rawURL), .rerun("产物缺失、无效或指纹不符"))
+        let raw = RawTranscription(schemaVersion: 1, sourcePath: "source.wav", sourceSHA256: "h", engine: "e", parameters: fp.parameters, recordingStartLocal: "2026-11-09T00:00:00.000", segments: [], coverage: [], textRanges: [], status: "completed_no_text", accuracyAssessment: "not_evaluated")
+        try JSONEncoder().encode(raw).write(to: rawURL)
         XCTAssertEqual(ResumePlanner.plan(expected: fp, statusURL: statusURL, rawURL: rawURL), .reuse)
         XCTAssertEqual(ResumePlanner.plan(expected: ResumeFingerprint(sourceSHA256: "other", engine: "e", parameters: fp.parameters), statusURL: statusURL, rawURL: rawURL), .rerun("哈希变"))
         XCTAssertEqual(ResumePlanner.plan(expected: ResumeFingerprint(sourceSHA256: "h", engine: "other", parameters: fp.parameters), statusURL: statusURL, rawURL: rawURL), .rerun("引擎变"))
@@ -83,6 +86,34 @@ final class TranscriptionTests: XCTestCase {
         _ = await run.process(files: [source], runDirectory: dir.appendingPathComponent("run"))
         let again = await run.process(files: [source], runDirectory: dir.appendingPathComponent("run"))
         XCTAssertEqual(again[0].decision, .reuse)
+    }
+
+    func testTranscriptionRunRepairsCorruptRawAndSupportsForcedRerun() async throws {
+        let dir = try fixtureDirectory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let source = try fakeSource(in: dir)
+        let counter = TranscriptionCallCounter()
+        let engine = CountingEngine(counter: counter, result: EngineResult(segments: [TranscriptSegment(start: 1, end: 2, text: "hello")], coveredRanges: [try AudioTimeRange(startOffsetSeconds: 0, endOffsetSeconds: 5)]))
+        let run = TranscriptionRun(engine: engine)
+        let runDirectory = dir.appendingPathComponent("run")
+        let first = await run.process(files: [source], runDirectory: runDirectory)
+        let output = first[0].outputDirectory
+        XCTAssertEqual(counter.value, 1)
+        _ = await run.process(files: [source], runDirectory: runDirectory)
+        XCTAssertEqual(counter.value, 1)
+
+        let rawURL = output.appendingPathComponent("raw.json")
+        try Data().write(to: rawURL)
+        _ = await run.process(files: [source], runDirectory: runDirectory)
+        XCTAssertEqual(counter.value, 2)
+        XCTAssertNoThrow(try JSONDecoder().decode(RawTranscription.self, from: Data(contentsOf: rawURL)))
+
+        try Data("{broken".utf8).write(to: rawURL)
+        _ = await run.process(files: [source], runDirectory: runDirectory)
+        XCTAssertEqual(counter.value, 3)
+        XCTAssertNoThrow(try JSONDecoder().decode(RawTranscription.self, from: Data(contentsOf: rawURL)))
+
+        _ = await run.process(files: [source], runDirectory: runDirectory, forceRerun: true)
+        XCTAssertEqual(counter.value, 4)
     }
 
     func testTranscriptionRunExitStatusReflectsOneRealEngineFailure() async throws {
@@ -130,6 +161,18 @@ final class TranscriptionTests: XCTestCase {
 private struct FakeEngine: TranscriptionEngine {
     let identifier: String; let result: EngineResult
     func transcribe(file: URL) async throws -> EngineResult { result }
+}
+private final class TranscriptionCallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+    func increment() { lock.lock(); count += 1; lock.unlock() }
+}
+private struct CountingEngine: TranscriptionEngine {
+    let counter: TranscriptionCallCounter
+    let result: EngineResult
+    var identifier: String { "fake" }
+    func transcribe(file: URL) async throws -> EngineResult { counter.increment(); return result }
 }
 private struct FailingEngine: TranscriptionEngine {
     var identifier: String { "fake" }

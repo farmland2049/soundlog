@@ -116,7 +116,12 @@ public enum ResumePlanner {
         guard status.fingerprint.engine == expected.engine else { return .rerun("引擎变") }
         guard status.fingerprint.parameters == expected.parameters else { return .rerun("参数变") }
         guard status.state == .completedWithText || status.state == .completedNoText,
-              FileManager.default.fileExists(atPath: rawURL.path) else { return .rerun("产物缺失") }
+              let rawData = try? Data(contentsOf: rawURL), !rawData.isEmpty,
+              let raw = try? JSONDecoder().decode(RawTranscription.self, from: rawData),
+              raw.schemaVersion > 0,
+              raw.sourceSHA256 == expected.sourceSHA256,
+              raw.engine == expected.engine,
+              raw.parameters == expected.parameters else { return .rerun("产物缺失、无效或指纹不符") }
         return .reuse
     }
 }
@@ -190,7 +195,7 @@ public struct FileProcessingResult: Sendable { public let file: URL; public let 
 public struct TranscriptionRun: Sendable {
     public let engine: any TranscriptionEngine
     public init(engine: any TranscriptionEngine) { self.engine = engine }
-    public func process(files: [URL], runDirectory: URL, parameters: [String: String] = [:]) async -> [FileProcessingResult] {
+    public func process(files: [URL], runDirectory: URL, parameters: [String: String] = [:], forceRerun: Bool = false) async -> [FileProcessingResult] {
         var outcomes: [FileProcessingResult] = []
         for file in files {
             do {
@@ -198,7 +203,7 @@ public struct TranscriptionRun: Sendable {
                 let safeName = file.lastPathComponent.replacingOccurrences(of: "/", with: "_")
                 let output = runDirectory.appendingPathComponent("\(hash.prefix(16))-\(safeName)", isDirectory: true)
                 let statusURL = output.appendingPathComponent("status.json"), rawURL = output.appendingPathComponent("raw.json")
-                let decision = ResumePlanner.plan(expected: fingerprint, statusURL: statusURL, rawURL: rawURL)
+                let decision = forceRerun ? ResumeDecision.rerun("强制重跑") : ResumePlanner.plan(expected: fingerprint, statusURL: statusURL, rawURL: rawURL)
                 if decision == .reuse { outcomes.append(FileProcessingResult(file: file, outputDirectory: output, decision: decision)); continue }
                 var failed = false
                 do {
