@@ -327,13 +327,25 @@ public enum IntegratedModuleExecutor {
     }
     private static func failureDescription(_ error: Error) -> String {
         let nsError = error as NSError
+        func underlyingChain(_ err: NSError) -> [String] {
+            var chain = ["\(err.domain) \(err.code)"]
+            if let underlying = err.userInfo[NSUnderlyingErrorKey] as? NSError {
+                chain.append(contentsOf: underlyingChain(underlying))
+            } else if let underlying = err.userInfo[NSUnderlyingErrorKey] as? Error {
+                chain.append(contentsOf: underlyingChain(underlying as NSError))
+            }
+            return chain
+        }
         func isFull(_ error: NSError) -> Bool {
             if (error.domain == NSPOSIXErrorDomain && error.code == 28) || (error.domain == NSCocoaErrorDomain && error.code == 640) { return true }
             if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError, isFull(underlying) { return true }
             if let underlying = error.userInfo[NSUnderlyingErrorKey] as? Error { return isFull(underlying as NSError) }
             return false
         }
-        if isFull(nsError) { return "磁盘空间不足 (ENOSPC, errno 28)" }
+        if isFull(nsError) {
+            let details = underlyingChain(nsError).joined(separator: ", underlying: ")
+            return "磁盘空间不足 (ENOSPC, errno 28) [\(details)]"
+        }
         return String(describing: error)
     }
 }

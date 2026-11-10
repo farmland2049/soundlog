@@ -73,6 +73,27 @@ final class IntegratedProcessingTests: XCTestCase {
         XCTAssertThrowsError(try AtomicFile.writeStreaming(to: statusURL, using: ENOSPCStreamingWriter()) { _ in })
     }
 
+    func testDiskFullFailureRetainsUnderlyingDomainAndCode() async throws {
+        let statusURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: statusURL) }
+        var status = IntegratedProcessingStatus(sourcePath: "synthetic", sourceSHA256: "hash")
+
+        let cocoaErr = NSError(domain: NSCocoaErrorDomain, code: 640)
+        let okCocoa = await IntegratedModuleExecutor.execute(module: "cocoa", fingerprint: ResumeFingerprint(sourceSHA256: "hash", engine: "x", parameters: [:]), status: &status, statusURL: statusURL) { throw cocoaErr }
+        XCTAssertFalse(okCocoa)
+        let cocoaMsg = status.modules["cocoa"]?.error ?? ""
+        XCTAssertTrue(cocoaMsg.contains("磁盘空间不足 (ENOSPC, errno 28)"))
+        XCTAssertTrue(cocoaMsg.contains("NSCocoaErrorDomain 640"))
+
+        let posixErr = NSError(domain: "wrapper", code: 999, userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: 28)])
+        let okPosix = await IntegratedModuleExecutor.execute(module: "posix", fingerprint: ResumeFingerprint(sourceSHA256: "hash", engine: "x", parameters: [:]), status: &status, statusURL: statusURL) { throw posixErr }
+        XCTAssertFalse(okPosix)
+        let posixMsg = status.modules["posix"]?.error ?? ""
+        XCTAssertTrue(posixMsg.contains("磁盘空间不足 (ENOSPC, errno 28)"))
+        XCTAssertTrue(posixMsg.contains("wrapper 999"))
+        XCTAssertTrue(posixMsg.contains("NSPOSIXErrorDomain 28"))
+    }
+
     func testExecutorRecomputesReusesAndInvalidatesThroughRealOperations() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
