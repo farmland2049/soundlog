@@ -33,12 +33,33 @@ import SoundlogCore
             try AtomicFile.write(try encoder.encode(manifest), to: run.appendingPathComponent("manifest.json"))
             if options.command == .manifest { print("清单已写入: \(run.path)"); return }
             if options.command == .process {
-                let allowed = Set(["locale", "confidenceThreshold", "minimumEventDurationSeconds", "mergeGapSeconds", "engines", "mock"])
+                let allowed = Set(["locale", "confidenceThreshold", "minimumEventDurationSeconds", "mergeGapSeconds", "engines", "mock", "identityLibrary", "identityThreshold"])
                 if let unknown = options.parameters.keys.first(where: { !allowed.contains($0) }) {
                     throw TranscriptionError.usage("process 不支持参数: \(unknown)")
                 }
                 let isMock = SoundlogMockConfiguration.isMockEnabled(parameters: options.parameters)
-                let diarizationParameters = try SoundEventParameterParser.parse(options.parameters.filter { $0.key != "locale" && $0.key != "engines" && $0.key != "mock" })
+                let nonSoundParams = Set(["locale", "engines", "mock", "identityLibrary", "identityThreshold"])
+                let diarizationParameters = try SoundEventParameterParser.parse(options.parameters.filter { !nonSoundParams.contains($0.key) })
+                let identityLibraryPath = options.parameters["identityLibrary"]
+                let identityThreshold: Double = options.parameters["identityThreshold"].flatMap { Double($0) } ?? 0.8
+                guard identityThreshold.isFinite, (0...1).contains(identityThreshold) else {
+                    throw TranscriptionError.usage("identityThreshold 必须是 0 到 1 之间的数字")
+                }
+                let identityLibrary: IdentityLibrary?
+                if let path = identityLibraryPath {
+                    let libURL = URL(fileURLWithPath: path)
+                    if FileManager.default.fileExists(atPath: libURL.path) {
+                        do {
+                            identityLibrary = try IdentityLibrary.load(from: libURL)
+                        } catch {
+                            throw TranscriptionError.io("无法加载身份库: \(error)")
+                        }
+                    } else {
+                        identityLibrary = IdentityLibrary()
+                    }
+                } else {
+                    identityLibrary = nil
+                }
                 var anyFailed = false
                 var fileRecords: [BatchAcceptanceReport.FileRecord] = []
                 for file in files {
@@ -155,6 +176,90 @@ import SoundlogCore
                         } else {
                             IntegratedModuleExecutor.skip(module: "speakerAlignment", reason: "转写或说话人分离未完成", fingerprint: alignmentFingerprint, status: &status, statusURL: statusURL, encoder: encoder)
                         }
+
+                        let identityEngineName = isMock ? "FluidAudio.Embedding-mock@0.17.7" : "FluidAudio.Embedding@0.17.7"
+                        let identityFingerprint = ResumeFingerprint(
+                            sourceSHA256: hash,
+                            engine: identityEngineName,
+                            parameters: [
+                                "identityLibrary": identityLibraryPath ?? "",
+                                "identityThreshold": String(identityThreshold)
+                            ]
+                        )
+                        let identityArtifact = output.appendingPathComponent("speaker-identities.json")
+                        if let lib = identityLibrary {
+                            if status.modules["speakerDiarization"]?.state == "completed",
+                               let timelineData = try? Data(contentsOf: output.appendingPathComponent("speaker-timeline.json")),
+                               let timelineDoc = try? JSONDecoder().decode(SpeakerTimelineDocument.self, from: timelineData) {
+                                let identityCompleted: Bool
+                                if isMock {
+                                    let extractor = MockSpeakerEmbeddingExtractor()
+                                    identityCompleted = await IntegratedModuleExecutor.execute(
+                                        module: "speakerIdentities",
+                                        fingerprint: identityFingerprint,
+                                        artifactURL: identityArtifact,
+                                        status: &status,
+                                        statusURL: statusURL,
+                                        encoder: encoder
+                                    ) {
+                                        _ = try await SpeakerIdentityPipeline(
+                                            extractor: extractor,
+                                            identityLibrary: lib,
+                                            threshold: identityThreshold
+                                        ).run(file: file, timeline: timelineDoc, runDirectory: output)
+                                    }
+                                } else {
+                                    #if os(macOS) && canImport(FluidAudio)
+                                    let extractor = FluidAudioSpeakerEmbeddingExtractor()
+                                    identityCompleted = await IntegratedModuleExecutor.execute(
+                                        module: "speakerIdentities",
+                                        fingerprint: identityFingerprint,
+                                        artifactURL: identityArtifact,
+                                        status: &status,
+                                        statusURL: statusURL,
+                                        encoder: encoder
+                                    ) {
+                                        _ = try await SpeakerIdentityPipeline(
+                                            extractor: extractor,
+                                            identityLibrary: lib,
+                                            threshold: identityThreshold
+                                        ).run(file: file, timeline: timelineDoc, runDirectory: output)
+                                    }
+                                    #else
+                                    IntegratedModuleExecutor.skip(
+                                        module: "speakerIdentities",
+                                        state: "unsupported",
+                                        reason: "FluidAudio 声纹提取仅支持 macOS",
+                                        fingerprint: identityFingerprint,
+                                        status: &status,
+                                        statusURL: statusURL,
+                                        encoder: encoder
+                                    )
+                                    identityCompleted = false
+                                    #endif
+                                }
+                                if !identityCompleted { anyFailed = true }
+                            } else {
+                                IntegratedModuleExecutor.skip(
+                                    module: "speakerIdentities",
+                                    reason: "说话人时间线未就绪",
+                                    fingerprint: identityFingerprint,
+                                    status: &status,
+                                    statusURL: statusURL,
+                                    encoder: encoder
+                                )
+                            }
+                        } else {
+                            IntegratedModuleExecutor.skip(
+                                module: "speakerIdentities",
+                                state: "skipped",
+                                reason: "未提供 identityLibrary 参数",
+                                fingerprint: identityFingerprint,
+                                status: &status,
+                                statusURL: statusURL,
+                                encoder: encoder
+                            )
+                        }
                         // Render one user-facing transcript and a hash-indexed run manifest from
                         // whatever modules completed. A module failure never suppresses these.
                         var artifactURLs: [String: URL] = [:]
@@ -182,7 +287,7 @@ import SoundlogCore
                             ranges += raw.coverage.compactMap { try? AudioTimeRange(startOffsetSeconds: $0.start, endOffsetSeconds: $0.end) }
                             artifactURLs["transcription-raw"] = output.appendingPathComponent("raw.json")
                         }
-                        for name in ["sound-events.json", "speaker-timeline.json", "speaker-aligned-transcript.json"] {
+                        for name in ["sound-events.json", "speaker-timeline.json", "speaker-aligned-transcript.json", "speaker-identities.json"] {
                             let url = output.appendingPathComponent(name)
                             if FileManager.default.fileExists(atPath: url.path) { artifactURLs[name] = url }
                         }
@@ -229,6 +334,9 @@ import SoundlogCore
                             }
                             if key == "sound-events.json", let doc = try? JSONDecoder().decode(SoundEventsDocument.self, from: data) {
                                 return (key, doc.events.map { "\($0.startOffsetSeconds)-\($0.endOffsetSeconds): \($0.category)" })
+                            }
+                            if key == "speaker-identities.json", let doc = try? JSONDecoder().decode(SpeakerIdentitiesDocument.self, from: data) {
+                                return (key, doc.assignments.map { "\($0.speakerID): \($0.displayName ?? "未知")" })
                             }
                             return nil
                         })

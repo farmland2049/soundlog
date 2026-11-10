@@ -125,9 +125,15 @@ public struct IdentityLibrary: Codable, Equatable, Sendable {
         enrollments[i].revoked = true; enrollments[i].confirmed = false
         enrollments[i].history.append(.init(action: .revoked, detail: reason))
     }
-    public func match(vector: [Float], minimumRawSimilarity: Double) -> IdentityMatch {
-        let candidates = enrollments.filter { $0.confirmed && !$0.revoked && $0.embedding.count == vector.count && !vector.isEmpty }
-        let scored = candidates.compactMap { enrollment -> (IdentityEnrollment, Double)? in
+    public func match(vector: [Float], minimumRawSimilarity: Double) throws -> IdentityMatch {
+        let confirmed = enrollments.filter { $0.confirmed && !$0.revoked }
+        guard !confirmed.isEmpty, !vector.isEmpty else { return .unknown() }
+        for c in confirmed {
+            if c.embedding.count != vector.count {
+                throw IdentityLibraryError.incompatibleVectors
+            }
+        }
+        let scored = confirmed.compactMap { enrollment -> (IdentityEnrollment, Double)? in
             let a = zip(vector, enrollment.embedding).reduce(0.0) { $0 + Double($1.0 * $1.1) }
             let na = sqrt(vector.reduce(0.0) { $0 + Double($1 * $1) })
             let nb = sqrt(enrollment.embedding.reduce(0.0) { $0 + Double($1 * $1) })

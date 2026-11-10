@@ -183,4 +183,91 @@ final class BatchAndMockTests: XCTestCase {
         XCTAssertEqual(badRecord?.status, "failed")
         XCTAssertNotNil(badRecord?.failureReason)
     }
+
+    func testCLIProcessBatchWithMockModeAndIdentityLibrary() throws {
+        let cliURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".build/debug/SoundlogCLI")
+        guard FileManager.default.isExecutableFile(atPath: cliURL.path) else { return }
+
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let inputDir = tempDir.appendingPathComponent("input", isDirectory: true)
+        let outputDir = tempDir.appendingPathComponent("output", isDirectory: true)
+        let runDir = outputDir.appendingPathComponent("run", isDirectory: true)
+        try FileManager.default.createDirectory(at: inputDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let wav = inputDir.appendingPathComponent("20261110120000.wav")
+        try createValidWAV(at: wav, durationSeconds: 1.0)
+        let hash = try SHA256.file(wav)
+
+        let mockVector = MockSpeakerEmbeddingExtractor.generateDeterministicVector(fileHash: hash, speakerID: "SPEAKER_00", dimension: 256)
+        var library = IdentityLibrary()
+        let sample = try IdentitySampleReference(sourcePath: wav.path, startOffsetSeconds: 0, endOffsetSeconds: 1, sourceSHA256: hash)
+        let enrollment = IdentityEnrollment(
+            displayName: "SyntheticSpeakerA",
+            confirmed: true,
+            samples: [sample],
+            embedding: mockVector,
+            basis: "synthetic test sample",
+            modelVersion: "mock-model",
+            engineVersion: "mock-engine"
+        )
+        let id = library.add(enrollment)
+        try library.confirm(id, name: "SyntheticSpeakerA")
+
+        let libURL = tempDir.appendingPathComponent("identity-library.json")
+        try library.save(to: libURL)
+
+        let process = Process()
+        process.executableURL = cliURL
+        process.arguments = [
+            "process",
+            "--input", inputDir.path,
+            "--output-dir", outputDir.path,
+            "--run-dir", runDir.path,
+            "--param", "engines=mock",
+            "--param", "identityLibrary=\(libURL.path)",
+            "--param", "identityThreshold=0.8"
+        ]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        process.waitUntilExit()
+
+        XCTAssertEqual(process.terminationStatus, 0)
+
+        let fileOutputDir = runDir.appendingPathComponent("\(hash.prefix(16))-20261110120000.wav")
+        let identitiesURL = fileOutputDir.appendingPathComponent("speaker-identities.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: identitiesURL.path))
+
+        let identitiesData = try Data(contentsOf: identitiesURL)
+        let identitiesDoc = try JSONDecoder().decode(SpeakerIdentitiesDocument.self, from: identitiesData)
+        XCTAssertEqual(identitiesDoc.threshold, 0.8)
+        XCTAssertEqual(identitiesDoc.assignments.count, 1)
+        let assignment = identitiesDoc.assignments[0]
+        XCTAssertEqual(assignment.speakerID, "SPEAKER_00")
+        XCTAssertEqual(assignment.displayName, "SyntheticSpeakerA")
+        XCTAssertEqual(assignment.identityID, id)
+        XCTAssertNotNil(assignment.rawSimilarityScore)
+        if let score = assignment.rawSimilarityScore {
+            XCTAssertGreaterThanOrEqual(score, 0.99)
+        }
+
+        let statusURL = fileOutputDir.appendingPathComponent("processing-status.json")
+        let statusData = try Data(contentsOf: statusURL)
+        let status = try JSONDecoder().decode(IntegratedProcessingStatus.self, from: statusData)
+        XCTAssertEqual(status.modules["speakerIdentities"]?.state, "completed")
+
+        let reportURL = runDir.appendingPathComponent("记录/整理验收.json")
+        let reportData = try Data(contentsOf: reportURL)
+        let report = try JSONDecoder().decode(BatchAcceptanceReport.self, from: reportData)
+        XCTAssertEqual(report.successCount, 1)
+        XCTAssertEqual(report.failureCount, 0)
+        XCTAssertEqual(report.files.first?.modules["speakerIdentities"], "completed")
+
+        let manifestURL = fileOutputDir.appendingPathComponent("run-manifest.json")
+        let manifestData = try Data(contentsOf: manifestURL)
+        let manifest = try JSONDecoder().decode(RunManifest.self, from: manifestData)
+        XCTAssertNotNil(manifest.artifacts["speaker-identities.json"])
+    }
 }

@@ -88,3 +88,17 @@
 - C（commit `8582360`）：执行器为执行模块记录 `residentBytesBefore`、`residentBytesAfter` 和 `processPeakResidentBytes`。Linux 读取 `/proc/self/statm`；macOS 使用 `task_info/mach_task_basic_info`，代码位于 macOS 条件编译内。Linux 测试确认三个字段均为正数。
 - 本轮 Linux `swift build` 通过、`swift test` 76项通过。Mac 本轮未验证；Apple/FluidAudio 与 macOS RSS 分支未在本轮构建。`bash scripts/mac-verify.sh` 及缺模型选项在 Linux 均运行合成 process，按脚本约定 process 的平台不支持退出记录在报告中，脚本整体退出0。
 - 本轮验证日志位于`/workspace/soundlog-stage8-logs/rework-verify-build.log`、`rework-verify-test.log`、`rework-verify-diff-check.log`、`rework-verify-mac-verify.log`、`rework-verify-mac-verify-missing-model.log`；所有性能值均为本轮 Linux 合成测量，不作为性能结论。
+
+## stage9：批量健壮性、验收报告与声纹身份比对（Linux 合成验证）
+
+- **第 1 部分**：
+  - 批量容错处理：文件夹批量处理时若单文件损坏、不可读或时长解析失败，记录该文件失败原因并继续处理下一个文件，整批不中断。
+  - 验收报告落盘：每次运行在运行目录下生成 `<运行目录>/记录/整理验收.json`，记录时间、输入路径、是否 mock、总文件数、成功数、失败数、每个文件状态及各模块明细。
+  - Mock 引擎支持：新增 `MockTranscriptionEngine`、`MockSoundEventEngine`、`MockSpeakerDiarizationEngine`，通过 `--param engines=mock` 或环境变量启用，真实校验音频文件容器和时长。
+- **第 2 部分（声纹接入身份库）**：
+  - 声纹提取协议：新增 `SpeakerEmbeddingExtractor` 协议，输入音频文件和匿名说话人时间线，输出每个说话人的特征向量、引擎及模型版本。
+  - Mock 提取器：新增 `MockSpeakerEmbeddingExtractor`，根据音频文件 SHA-256 哈希与说话人编号生成确定性伪向量（L2 归一化），标识含 `mock`。若音频损坏无法读取时长则校验失败。
+  - Mac FluidAudio 提取器骨架：新增 `FluidAudioSpeakerEmbeddingExtractor`，受 `#if os(macOS) && canImport(FluidAudio)` 保护。标明为 Mac 专用、未在 Mac 实体机验证；调用时抛出明确的“Mac 待实现/待验证”错误，保证 Linux 构建零影响。
+  - 身份比对与只读安全：只读加载指定路径的 `IdentityLibrary`（不存在视为空库），绝不采集、注册或写入任何真实声纹与身份。比对输出写入每个文件的 `speaker-identities.json`，记录已确认身份或未知状态，相似度标明为非概率原始相似度（raw similarity score）。若库中已有身份向量与待测向量维度不一致，严格抛出 `IdentityLibraryError.incompatibleVectors`。
+  - Process 管线与验收集成：`process` 命令支持 `--param identityLibrary=<路径>` 与 `--param identityThreshold=<阈值>`（默认 0.8）。未提供时跳过并记录 `skipped`；Mock 模式下执行 mock 提取比对并输出产物；非 Mock Linux 记录 `unsupported`。模块状态 `speakerIdentities` 写入 `processing-status.json`、纳入 `run-manifest.json` 产物与抽样，并汇总进 `记录/整理验收.json`。单个文件声纹模块失败不会打断整批批处理。
+  - Linux 构建与测试：`swift build` 与 `swift test` 87 项测试全部通过，覆盖 mock 确定性、合成身份命中、空库未知、维度不匹配报错及 process 流程集成。未采集或登记项目主人或任何真人的声音。

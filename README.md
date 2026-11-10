@@ -22,7 +22,13 @@
 
 `swift run SoundlogCLI sound-events --input <文件或目录> --output-dir <输出根目录> [--run-dir <已有运行目录>] [--param confidenceThreshold=0.3] [--param minimumEventDurationSeconds=0.5] [--param mergeGapSeconds=0.5]`对每个文件生成 `sound-events.json` 与 `sound-event-windows.ndjson`。摘要保存合并事件、元数据和候选 sidecar 引用；NDJSON 每行保存一个窗口的原始候选，事件索引可用 `SoundEventWindowReader` 回查。阈值范围为 0–1；最短事件时长和合并间隔须为非负秒数，非法参数会报错。真实录音效果与人工误报/漏报抽查仍待验证。
 
-需要一次运行三类分析时，使用 `swift run SoundlogCLI process --input <文件或目录> --output-dir <本机产出目录> [--param locale=zh-CN] [--param confidenceThreshold=0.3] [--param minimumEventDurationSeconds=0.5] [--param mergeGapSeconds=0.5]`。每个录音在同一结果目录内生成 `raw.json`、`transcript.md`（有文字时）、`sound-events.json`、`sound-event-windows.ndjson`、`speaker-timeline.json`、`speaker-aligned-transcript.json/.md`、转写`status.json`及汇总运行状态的`processing-status.json`。三条识别管线独立执行并分别记录状态；逐字稿与说话人关联按区间时间重叠生成候选，不拆分原转写片段、不确定身份。重复指定同一`--run-dir`时，各模块按源/引擎/参数指纹及产物校验续跑；旧版内嵌窗口产物缺少 sidecar 时会重跑一次；processing-status 缓存产物字节数、纳秒 mtime 和 SHA-256，状态文件自身不进入清单哈希。模块状态另记录执行前后 RSS 与进程峰值。
+需要一次运行三类分析时，使用 `swift run SoundlogCLI process --input <文件或目录> --output-dir <本机产出目录> [--param locale=zh-CN] [--param confidenceThreshold=0.3] [--param minimumEventDurationSeconds=0.5] [--param mergeGapSeconds=0.5] [--param identityLibrary=<身份库路径>] [--param identityThreshold=0.8]`。每个录音在同一结果目录内生成 `raw.json`、`transcript.md`（有文字时）、`sound-events.json`、`sound-event-windows.ndjson`、`speaker-timeline.json`、`speaker-aligned-transcript.json/.md`、转写`status.json`及汇总运行状态的`processing-status.json`；若传入 `--param identityLibrary`，还会进一步提取匿名说话人声纹特征并比对只读身份库，在对应目录写出 `speaker-identities.json`。三条识别管线独立执行并分别记录状态；逐字稿与说话人关联按区间时间重叠生成候选，不拆分原转写片段。重复指定同一`--run-dir`时，各模块按源/引擎/参数指纹及产物校验续跑；旧版内嵌窗口产物缺少 sidecar 时会重跑一次；processing-status 缓存产物字节数、纳秒 mtime 和 SHA-256，状态文件自身不进入清单哈希。模块状态另记录执行前后 RSS 与进程峰值。
+
+若未提供 `--param identityLibrary`，`speakerIdentities` 模块将被跳过并在 `processing-status.json` 中记为 `skipped`。传入身份库时：
+- 只读加载身份库文件，若文件不存在则视为空库；流程绝不自动登记、采集或写入任何新身份或真实声纹。
+- 比对结果以原始相似度（raw similarity score，非概率）记录已确认身份或未知状态。
+- **Mock 模式**：使用 `MockSpeakerEmbeddingExtractor` 根据文件哈希与说话人编号生成确定性伪向量（标识含 `mock`），在 Linux 上可完整跑通流程。
+- **Mac 原生实现与待验证事项**：Mac 上使用 `FluidAudioSpeakerEmbeddingExtractor`（受 `#if os(macOS) && canImport(FluidAudio)` 保护）；本适配器为 **Mac 专用，目前未在 Mac 实体机验证真实模型推理 API**，代码中保留骨架并在调用时抛出明确的“Mac 待实现/待验证”错误，真实模型对接留待后续 Mac 环境调试。非 Mock 模式下的 Linux 运行环境如实记录 `unsupported`。单个模块失败不会导致整批批处理中断。
 
 首次在本机安装固定的离线说话人模型时，显式运行 `swift run SoundlogCLI speaker-models install`。此命令从固定版本模型仓库下载、校验权重与署名/来源文件，并加载模型但不处理录音；当前本机回执为 revision `df2625ac79a7ac6b65ad868fee6d80f320da4232`，21 项固定资产共 21,599,417 字节。FluidAudio 0.17.7 要求 macOS 14 或更高版本。SwiftPM 解析该包时还会下载其声明的 Nemo 二进制工件，即使 Swift 6.2 清单关闭了 traits；它与说话人模型分开，保存在忽略的 `.build/` 中。`bash scripts/mac-verify.sh --simulate-missing-model` 使用临时空模型目录进行缺失模型模拟，不删除或更改真实模型缓存；Linux 会在报告中记录 FluidAudio unsupported。
 

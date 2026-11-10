@@ -76,6 +76,10 @@ public struct BatchAcceptanceReport: Codable, Equatable, Sendable {
                 failedIssues.append("\(req): \(mod.state)\(errStr)")
             }
         }
+        if let identMod = modules["speakerIdentities"], identMod.state == "failed" {
+            let errStr = identMod.error.map { " (\($0))" } ?? ""
+            failedIssues.append("speakerIdentities: failed\(errStr)")
+        }
         if failedIssues.isEmpty {
             return (status: "completed", failureReason: nil, moduleStates: moduleStates)
         } else {
