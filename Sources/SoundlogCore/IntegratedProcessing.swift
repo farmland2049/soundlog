@@ -76,7 +76,13 @@ public enum IntegratedArtifactValidator {
 /// module is persisted without preventing its caller from running later modules.
 public enum IntegratedModuleExecutor {
     @discardableResult
-    public static func execute(module: String, fingerprint: ResumeFingerprint, status: inout IntegratedProcessingStatus, statusURL: URL, encoder: JSONEncoder = JSONEncoder(), operation: () async throws -> Void) async -> Bool {
+    public static func execute(module: String, fingerprint: ResumeFingerprint, artifactURL: URL? = nil, status: inout IntegratedProcessingStatus, statusURL: URL, encoder: JSONEncoder = JSONEncoder(), operation: () async throws -> Void) async -> Bool {
+        if let artifactURL, IntegratedModuleResumePlanner.plan(expected: fingerprint, status: status.modules[module], artifactURL: artifactURL) == .reuse {
+            status.modules[module]?.execution = "reuse"
+            status.modules[module]?.wallClockSeconds = 0
+            try? AtomicFile.write(try encoder.encode(status), to: statusURL)
+            return true
+        }
         let started = Date()
         status.record(module, state: "running", fingerprint: fingerprint)
         do { try AtomicFile.write(try encoder.encode(status), to: statusURL) }
@@ -89,6 +95,7 @@ public enum IntegratedModuleExecutor {
             try await operation()
             status.record(module, state: "completed", fingerprint: fingerprint)
             status.modules[module]?.execution = "recomputed"
+            try AtomicFile.write(try encoder.encode(status), to: statusURL)
             status.modules[module]?.wallClockSeconds = Date().timeIntervalSince(started)
             try AtomicFile.write(try encoder.encode(status), to: statusURL)
             return true
@@ -194,6 +201,18 @@ public struct ArtifactRecord: Codable, Equatable, Sendable {
 
 public enum UnifiedOutput {
     /// Parse container metadata without decoding audio. A failed parse never guesses.
+    public static func audioDuration(file url: URL) throws -> AudioDuration {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        // Inspect a bounded prefix first. VBR headers are in the first MPEG frame,
+        // so large files with Xing/VBRI never need their tail mapped or read.
+        let prefix = try handle.read(upToCount: 64 * 1024) ?? Data()
+        if let mp3 = mp3Duration(data: prefix), mp3.method == "xing" || mp3.method == "vbri" {
+            return AudioDuration(seconds: mp3.seconds, method: mp3.method, error: nil)
+        }
+        return audioDuration(data: try Data(contentsOf: url, options: [.mappedIfSafe]))
+    }
+
     public static func audioDuration(data: Data) -> AudioDuration {
         if let wav = wavDuration(data: data) { return AudioDuration(seconds: wav, method: "wav-data-size", error: nil) }
         if let mp3 = mp3Duration(data: data) { return AudioDuration(seconds: mp3.seconds, method: mp3.method, error: nil) }
@@ -249,8 +268,12 @@ public enum UnifiedOutput {
             frames += 1; summedDuration += Double(version == 3 ? 1152 : 576) / Double(sampleRate); offset += frameLength
         }
         if let metadataDuration { return (metadataDuration.seconds, metadataDuration.method) }
-        guard frames > 0, offset == data.count || offset + 4 > data.count else { return nil }
-        return (summedDuration, "frame-scan")
+        guard frames > 0 else { return nil }
+        // Once valid frames have been found, container trailers and a short
+        // damaged tail do not invalidate the duration already measured.
+        let tail = data[offset...]
+        let hasID3v1 = tail.count == 128 && tail.prefix(3).elementsEqual(Data("TAG".utf8))
+        return (summedDuration, hasID3v1 ? "frame-scan (ID3v1 skipped)" : (tail.isEmpty ? "frame-scan" : "frame-scan (trailing garbage ignored)"))
     }
 
     private static func be32(_ data: Data, _ i: Int) -> UInt32 { UInt32(data[i]) << 24 | UInt32(data[i+1]) << 16 | UInt32(data[i+2]) << 8 | UInt32(data[i+3]) }
@@ -261,8 +284,10 @@ public enum UnifiedOutput {
             while i + 8 <= upper {
                 let size32 = Int(be32(data, i)); let type = String(data: data[i+4..<i+8], encoding: .ascii) ?? ""
                 let header = size32 == 1 ? 16 : 8
-                let size = size32 == 1 && i + 16 <= upper ? Int(UInt64(be32(data, i+8)) << 32 | UInt64(be32(data, i+12))) : size32
-                guard size >= header, i + size <= upper else { return nil }
+                let wideSize = size32 == 1 && i + 16 <= upper ? (UInt64(be32(data, i+8)) << 32 | UInt64(be32(data, i+12))) : UInt64(size32)
+                guard wideSize <= UInt64(Int.max) else { return nil }
+                let size = Int(wideSize)
+                guard size >= header, size <= upper - i else { return nil }
                 if wanted.contains(type) {
                     let p = i + header
                     if type == "mvhd" || type == "mdhd" {

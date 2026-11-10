@@ -185,9 +185,13 @@ final class IntegratedProcessingTests: XCTestCase {
         XCTAssertEqual(UnifiedOutput.wavDuration(data: data), 1)
     }
 
-    private func mp3Frame(xingFrames: UInt32? = nil, vbriFrames: UInt32? = nil) -> Data {
-        let length = 417
-        var frame = Data([0xff, 0xfb, 0x90, 0x00]) + Data(repeating: 0, count: length - 4)
+    private func mp3Frame(xingFrames: UInt32? = nil, vbriFrames: UInt32? = nil, version: Int = 3, mono: Bool = false, crc: Bool = false) -> Data {
+        let header: [UInt8] = version == 3 ? [0xff, 0xfb, 0x90, mono ? 0xc0 : 0] : (version == 2 ? [0xff, 0xf3, 0x80, mono ? 0xc0 : 0] : [0xff, 0xe3, 0x80, mono ? 0xc0 : 0])
+        let bitrate = version == 3 ? 128_000 : 64_000
+        let rate = version == 3 ? 44_100 : version == 2 ? 22_050 : 11_025
+        let length = (version == 3 ? 144 : 72) * bitrate / rate
+        var frame = Data(header) + Data(repeating: 0, count: length - 4)
+        if crc { frame[1] &= 0xfe; frame.replaceSubrange(4..<4, with: [0, 0]); frame.removeLast(2) }
         if let xingFrames {
             frame.replaceSubrange(36..<40, with: Data("Xing".utf8))
             frame[43] = 1
@@ -202,6 +206,26 @@ final class IntegratedProcessingTests: XCTestCase {
         return frame
     }
 
+    func testSyntheticMP3VBRFileReturnsFromPrefixAndHashFileMatchesData() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("synthetic.mp3")
+        let bytes = mp3Frame(xingFrames: 100) + Data(repeating: 0, count: 8 * 1024 * 1024)
+        try bytes.write(to: url)
+        let result = try UnifiedOutput.audioDuration(file: url)
+        XCTAssertEqual(result.method, "xing")
+        XCTAssertEqual(result.seconds ?? 0, 100 * 1152.0 / 44100.0, accuracy: 0.000001)
+        XCTAssertEqual(try SHA256.file(url), SHA256.digest(bytes))
+    }
+
+    func testSyntheticMP3MPEG2MPEG25CRCAndMonoFrames() {
+        for (version, expected) in [(2, 2 * 576.0 / 22050.0), (0, 2 * 576.0 / 11025.0)] {
+            let result = UnifiedOutput.audioDuration(data: mp3Frame(version: version, mono: true, crc: true) + mp3Frame(version: version, mono: true, crc: true))
+            XCTAssertEqual(result.seconds ?? 0, expected, accuracy: 0.000001)
+        }
+    }
+
     func testSyntheticMP3CBRFrameScanAndID3v2() {
         let cbr = mp3Frame() + mp3Frame() + mp3Frame()
         let result = UnifiedOutput.audioDuration(data: cbr)
@@ -211,6 +235,16 @@ final class IntegratedProcessingTests: XCTestCase {
         tagged.append(cbr)
         XCTAssertEqual(UnifiedOutput.audioDuration(data: tagged).method, "frame-scan")
         XCTAssertEqual(UnifiedOutput.audioDuration(data: tagged).seconds ?? 0, result.seconds ?? -1, accuracy: 0.000001)
+    }
+
+    func testSyntheticMP3ID3v1AndTrailingGarbageKeepScannedDuration() {
+        let frames = mp3Frame() + mp3Frame()
+        let tagged = UnifiedOutput.audioDuration(data: frames + Data("TAG".utf8) + Data(repeating: 0, count: 125))
+        XCTAssertEqual(tagged.seconds ?? 0, 2 * 1152.0 / 44100.0, accuracy: 0.000001)
+        XCTAssertTrue(tagged.method.contains("ID3v1"))
+        let garbage = UnifiedOutput.audioDuration(data: frames + Data([0xde, 0xad, 0xbe]))
+        XCTAssertEqual(garbage.seconds ?? 0, 2 * 1152.0 / 44100.0, accuracy: 0.000001)
+        XCTAssertTrue(garbage.method.contains("garbage"))
     }
 
     func testSyntheticMP3XingAndInvalidInputs() {
@@ -240,6 +274,14 @@ final class IntegratedProcessingTests: XCTestCase {
         XCTAssertEqual(result.method, "mvhd/mdhd")
     }
 
+    func testSyntheticM4ARejectsOverflowingLargeAtomSize() {
+        let bytes = Data([0,0,0,1]) + Data("moov".utf8) + Data(repeating: 0xff, count: 8)
+        let result = UnifiedOutput.audioDuration(data: bytes)
+        XCTAssertNil(result.seconds)
+        XCTAssertEqual(result.method, "failed")
+        XCTAssertFalse(result.error?.isEmpty ?? true)
+    }
+
     func testPerformanceFieldsAndUnitsSerialize() throws {
         let sample = ProcessPeakMemory.current()
         let perf = RunPerformance(wallClockSeconds: 1.25, peakMemoryBytes: sample.bytes, peakMemorySource: sample.source, ruMaxRSSUnit: sample.unit)
@@ -248,7 +290,11 @@ final class IntegratedProcessingTests: XCTestCase {
         let encodedPerformance = try XCTUnwrap(object["performance"] as? [String: Any])
         XCTAssertTrue(encodedPerformance["wallClockSeconds"] is NSNumber)
         XCTAssertTrue(encodedPerformance["peakMemoryBytes"] is NSNumber)
-        XCTAssertTrue(["KB", "bytes"].contains(encodedPerformance["ruMaxRSSUnit"] as? String ?? ""))
+        #if os(Linux)
+        XCTAssertEqual(encodedPerformance["ruMaxRSSUnit"] as? String, "KB")
+        #elseif os(macOS)
+        XCTAssertEqual(encodedPerformance["ruMaxRSSUnit"] as? String, "bytes")
+        #endif
         XCTAssertEqual(manifest.modules["m"]?.execution, "recomputed")
         XCTAssertNotNil(manifest.modules["m"]?.wallClockSeconds)
         let unknownDuration = try UnifiedOutput.buildManifest(inputPath: "bad.mp3", sourceSHA256: "hash", duration: nil, coverageRanges: [], modules: [:], samples: [:], artifactURLs: [:], baseDirectory: FileManager.default.temporaryDirectory, durationMethod: "failed", durationError: "truncated")

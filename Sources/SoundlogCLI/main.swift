@@ -52,9 +52,11 @@ import SoundlogCore
                             status.modules[module]?.wallClockSeconds = Date().timeIntervalSince(start)
                             status.modules[module]?.execution = "recomputed"
                         } else if state == "completed" {
-                            status.modules[module]?.execution = "reuse"
+                            status.modules[module]?.execution = "recomputed"
+                            status.modules[module]?.wallClockSeconds = 0
                         } else if ["failed", "unsupported", "skipped"].contains(state) {
                             status.modules[module]?.execution = state == "skipped" ? "skip" : state
+                            status.modules[module]?.wallClockSeconds = 0
                         }
                         try IntegratedArtifactValidator.validate(status: status)
                         try AtomicFile.write(try encoder.encode(status), to: output.appendingPathComponent("processing-status.json"))
@@ -150,7 +152,7 @@ import SoundlogCore
                     } else {
                         try record("unifiedTranscript", "skipped", "没有可用候选对齐结果")
                     }
-                    let durationInfo = (try? Data(contentsOf: file)).map(UnifiedOutput.audioDuration(data:)) ?? AudioDuration(seconds: nil, method: "failed", error: "无法读取输入")
+                    let durationInfo = (try? UnifiedOutput.audioDuration(file: file)) ?? AudioDuration(seconds: nil, method: "failed", error: "无法读取输入")
                     let duration = durationInfo.seconds
                     var ranges: [AudioTimeRange] = []
                     if let rawData = try? Data(contentsOf: output.appendingPathComponent("raw.json")), let raw = try? JSONDecoder().decode(RawTranscription.self, from: rawData) {
