@@ -3,6 +3,14 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 if [[ -f /home/box/opt/swift-env.sh ]]; then . /home/box/opt/swift-env.sh; fi
 
+simulate_missing_model=0
+if [[ "${1:-}" == "--simulate-missing-model" && $# == 1 ]]; then
+    simulate_missing_model=1
+elif [[ $# != 0 ]]; then
+    echo "用法：$0 [--simulate-missing-model]" >&2
+    exit 2
+fi
+
 report="${SOUNDLOG_VERIFY_REPORT:-/tmp/soundlog-mac-verify.md}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -23,16 +31,21 @@ with wave.open(sys.argv[1], "wb") as f:
 PY
 
 process_code=0
-swift run SoundlogCLI process --input "$work/input" --output-dir "$work/output" --run-dir "$work/output/run" >"$work/process.log" 2>&1 || process_code=$?
+if [[ "$simulate_missing_model" == 1 ]]; then
+    mkdir -p "$work/empty-model-cache"
+    SOUNDLOG_FLUIDAUDIO_MODELS_DIR="$work/empty-model-cache" swift run SoundlogCLI process --input "$work/input" --output-dir "$work/output" --run-dir "$work/output/run" >"$work/process.log" 2>&1 || process_code=$?
+else
+    swift run SoundlogCLI process --input "$work/input" --output-dir "$work/output" --run-dir "$work/output/run" >"$work/process.log" 2>&1 || process_code=$?
+fi
 manifest="$work/output/run/$(python3 - "$work/input/20261110120000.wav" <<'PY'
 import hashlib,sys
 print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()[:16] + "-20261110120000.wav")
 PY
 )/run-manifest.json"
 
-python3 - "$report" "$work" "$manifest" "$build_code" "$test_code" "$process_code" <<'PY'
+python3 - "$report" "$work" "$manifest" "$build_code" "$test_code" "$process_code" "$simulate_missing_model" <<'PY'
 import json, os, platform, re, subprocess, sys
-report, work, manifest_path, build_code, test_code, process_code = sys.argv[1:]
+report, work, manifest_path, build_code, test_code, process_code, simulate_missing_model = sys.argv[1:]
 def read(name):
     try: return open(os.path.join(work, name), encoding="utf-8", errors="replace").read()
     except OSError: return ""
@@ -54,6 +67,11 @@ for name, entry in sorted(states.items()):
     error = (entry.get('error') or '').replace('|', r'\|')
     lines.append(f"| {name} | {entry.get('state','unknown')} | {error} |")
 lines += ["", "合成输入为 1 秒静音 WAV；未使用真实录音或身份样本，也未下载模型。若本机已有说话人模型，process 会从本机缓存加载并处理静音输入；模型缺失时应在对应 Mac 模块状态中记录原因。", ""]
+if simulate_missing_model == '1':
+    if platform.system() == 'Darwin':
+        lines.insert(-1, "缺模型模拟：FluidAudio 模型目录通过 SOUNDLOG_FLUIDAUDIO_MODELS_DIR 指向本次临时空目录；未访问或修改真实模型缓存。")
+    else:
+        lines.insert(-1, "缺模型模拟：Linux 不支持 FluidAudio，process 按 unsupported 如实记录；未访问或修改模型缓存。")
 os.makedirs(os.path.dirname(report) or ".", exist_ok=True)
 open(report, "w", encoding="utf-8").write("\n".join(lines))
 PY

@@ -65,7 +65,7 @@ public struct FluidAudioSpeakerEngine: SpeakerDiarizationEngine {
 
     public func diarize(file: URL) async throws -> SpeakerEngineResult {
         let manifest = try Self.loadManifest()
-        let modelsDirectory = OfflineDiarizerModels.defaultModelsDirectory()
+        let modelsDirectory = ProcessInfo.processInfo.environment["SOUNDLOG_FLUIDAUDIO_MODELS_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) } ?? OfflineDiarizerModels.defaultModelsDirectory()
         let repoDirectory = modelsDirectory.appendingPathComponent(Repo.diarizer.folderName, isDirectory: true)
         _ = try Self.verifyInstalledAssets(manifest, repoDirectory: repoDirectory)
 

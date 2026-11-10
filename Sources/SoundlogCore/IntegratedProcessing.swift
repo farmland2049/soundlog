@@ -270,12 +270,17 @@ public enum IntegratedModuleExecutor {
             try AtomicFile.write(try encoder.encode(status), to: statusURL)
             return true
         } catch {
-            status.record(module, state: "failed", error: String(describing: error), fingerprint: fingerprint)
+            status.record(module, state: "failed", error: failureDescription(error), fingerprint: fingerprint)
             status.modules[module]?.execution = "recomputed"
             status.modules[module]?.wallClockSeconds = Date().timeIntervalSince(started)
             try? AtomicFile.write(try encoder.encode(status), to: statusURL)
             return false
         }
+    }
+    private static func failureDescription(_ error: Error) -> String {
+        let nsError = error as NSError
+        if nsError.domain == NSPOSIXErrorDomain && nsError.code == 28 { return "磁盘空间不足 (ENOSPC, errno 28)" }
+        return String(describing: error)
     }
 }
 

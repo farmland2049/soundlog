@@ -147,8 +147,17 @@ public struct AudioTimeRangeCodable: Codable, Equatable, Sendable {
 public struct EngineResult: Sendable { public let segments: [TranscriptSegment]; public let coveredRanges: [AudioTimeRange] }
 public protocol TranscriptionEngine: Sendable { var identifier: String { get }; func transcribe(file: URL) async throws -> EngineResult }
 
+public protocol AtomicFileWriting: Sendable { func write(_ data: Data, to destination: URL) throws }
+public struct DefaultAtomicFileWriter: AtomicFileWriting {
+    public init() {}
+    public func write(_ data: Data, to destination: URL) throws { try AtomicFile.writeDefault(data, to: destination) }
+}
+
 public enum AtomicFile {
-    public static func write(_ data: Data, to destination: URL) throws {
+    public static func write(_ data: Data, to destination: URL, using writer: any AtomicFileWriting = DefaultAtomicFileWriter()) throws {
+        try writer.write(data, to: destination)
+    }
+    fileprivate static func writeDefault(_ data: Data, to destination: URL) throws {
         let fm = FileManager.default; try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         let temporary = destination.deletingLastPathComponent().appendingPathComponent(".\(destination.lastPathComponent).\(UUID().uuidString).tmp")
         do { try data.write(to: temporary, options: .withoutOverwriting); if rename(temporary.path, destination.path) != 0 { throw TranscriptionError.io("无法原子替换 \(destination.path)") } }

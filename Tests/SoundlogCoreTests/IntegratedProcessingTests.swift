@@ -6,6 +6,9 @@ private final class CountingArtifactHasher: ArtifactHashing, @unchecked Sendable
     let calls = ExecutorCallCounter()
     func hash(file url: URL) throws -> String { calls.value += 1; return try SHA256.file(url) }
 }
+private struct ENOSPCWriter: AtomicFileWriting {
+    func write(_ data: Data, to destination: URL) throws { throw NSError(domain: NSPOSIXErrorDomain, code: 28) }
+}
 
 final class IntegratedProcessingTests: XCTestCase {
     func testExecutorRecomputesReusesAndInvalidatesThroughRealOperations() async throws {
@@ -259,6 +262,26 @@ final class IntegratedProcessingTests: XCTestCase {
         try Data().write(to: blocker)
         XCTAssertThrowsError(try AtomicFile.write(Data("nope".utf8), to: blocker.appendingPathComponent("result.txt")))
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["not-a-directory"])
+    }
+
+    func testInjectedENOSPCMarksModuleFailedAndStillWritesManifest() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var status = IntegratedProcessingStatus(sourcePath: "synthetic", sourceSHA256: "hash")
+        let artifact = root.appendingPathComponent("blocked.json"), statusURL = root.appendingPathComponent("processing-status.json")
+        let fp = ResumeFingerprint(sourceSHA256: "hash", engine: "synthetic", parameters: [:])
+        let completed = await IntegratedModuleExecutor.execute(module: "writer", fingerprint: fp, status: &status, statusURL: statusURL) {
+            try AtomicFile.write(Data("x".utf8), to: artifact, using: ENOSPCWriter())
+        }
+        XCTAssertFalse(completed)
+        XCTAssertEqual(status.modules["writer"]?.state, "failed")
+        XCTAssertTrue(status.modules["writer"]?.error?.contains("磁盘空间不足") == true)
+        let manifestURL = root.appendingPathComponent("run-manifest.json")
+        _ = try UnifiedOutput.writeManifest(inputPath: "synthetic.wav", sourceSHA256: "hash", duration: nil, coverageRanges: [], modules: status.modules, samples: [:], artifactURLs: [:], baseDirectory: root, to: manifestURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manifestURL.path))
+        let saved = try JSONDecoder().decode(IntegratedProcessingStatus.self, from: Data(contentsOf: statusURL))
+        XCTAssertEqual(saved.modules["writer"]?.state, "failed")
     }
 
     func testArtifactWriteFailureCanBeRecordedWithReason() throws {
