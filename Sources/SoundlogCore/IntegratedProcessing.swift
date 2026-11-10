@@ -253,7 +253,8 @@ public enum UnifiedOutput {
             guard offset <= fileLength else { return nil }
         }
         let bitrates: [[Int]] = [[], [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320], [0,8,16,24,32,40,48,56,64,80,96,112,128,144,160]], rates = [44100,48000,32000]
-        var frames = 0, total = 0.0
+        var frames = 0
+        var samplesByRate: [Int: UInt64] = [:]
         while offset + 4 <= fileLength {
             let b = try read(offset, 4); guard b.count == 4 else { break }
             let h = UInt32(b[0]) << 24 | UInt32(b[1]) << 16 | UInt32(b[2]) << 8 | UInt32(b[3])
@@ -278,9 +279,12 @@ public enum UnifiedOutput {
                     if count > 0 { return (Double(count) * Double(version == 3 ? 1152 : 576) / Double(rate), "vbri") }
                 }
             }
-            frames += 1; total += Double(version == 3 ? 1152 : 576) / Double(rate); offset += UInt64(frameLength)
+            frames += 1
+            samplesByRate[rate, default: 0] &+= UInt64(version == 3 ? 1152 : 576)
+            offset += UInt64(frameLength)
         }
         guard frames > 0 else { return nil }
+        let total = samplesByRate.reduce(0.0) { $0 + Double($1.value) / Double($1.key) }
         if fileLength - offset == 128, try read(offset, 3).elementsEqual(Data("TAG".utf8)) { return (total, "frame-scan (ID3v1 skipped)") }
         return (total, offset == fileLength ? "frame-scan" : "frame-scan (trailing garbage ignored)")
     }

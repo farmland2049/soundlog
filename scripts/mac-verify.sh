@@ -53,7 +53,7 @@ lines = ["# Soundlog 合成验证报告", "", f"- 时间：{__import__('datetime
 for name, entry in sorted(states.items()):
     error = (entry.get('error') or '').replace('|', r'\|')
     lines.append(f"| {name} | {entry.get('state','unknown')} | {error} |")
-lines += ["", "合成输入为 1 秒静音 WAV；未使用真实录音、身份样本或模型。模型缺失时应在对应 Mac 模块状态中记录原因。", ""]
+lines += ["", "合成输入为 1 秒静音 WAV；未使用真实录音或身份样本，也未下载模型。若本机已有说话人模型，process 会从本机缓存加载并处理静音输入；模型缺失时应在对应 Mac 模块状态中记录原因。", ""]
 os.makedirs(os.path.dirname(report) or ".", exist_ok=True)
 open(report, "w", encoding="utf-8").write("\n".join(lines))
 PY

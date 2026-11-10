@@ -1,6 +1,6 @@
 # soundlog 项目状态
 
-更新日期：2026-11-10。当前阶段：通用转写、环境声事件核心、匿名说话人时间线、候选对齐及FluidAudio v0.17.7离线适配器已实现；新增身份库跨平台数据骨架、整合状态校验与模块断点续跑。stage7 当前 Linux x86_64 / Swift 6.1.2 `swift build`通过，`swift test`共68项通过；`bash scripts/mac-verify.sh`已在 Linux 完整运行。此次没有在 Mac 上验证，Apple/FluidAudio 代码仍受平台条件编译保护。SwiftPM解析时将FluidAudio 0.17.7及声明的Nemo二进制工件取入忽略目录`.build/`；本轮未下载模型权重。
+更新日期：2026-11-10。当前阶段：通用转写、环境声事件核心、匿名说话人时间线、候选对齐及FluidAudio v0.17.7离线适配器已实现；新增身份库跨平台数据骨架、整合状态校验与模块断点续跑。stage7 的 Linux x86_64 / Swift 6.1.2 验证为 `swift build` 通过、`swift test` 68 项通过；Mac 27.2 / arm64 / Swift 6.4.2 已通过构建和 69 项测试，`bash scripts/mac-verify.sh` 退出码为0。另在一段本机MP3上完成整合流程及续跑验证；产物仍在忽略目录，语音和声学结果未人工核验。验证脚本不下载模型，但本机已有FluidAudio模型时会加载缓存。
 
 本轮 `stage6-unified-output` Linux 合成验证已补齐统一候选逐字稿、run-manifest、覆盖缺口和首中尾抽样、原子写入失败测试，以及 `scripts/mac-verify.sh`。Mac 实机一键验证再次确认 `swift build` 通过、`swift test` 共55项通过；脚本默认报告写入`/tmp/soundlog-mac-verify.md`。随后使用用户提供的 `20261107191809.mp3` 本机运行 `process`：转写94段、SoundAnalysis 870个窗口/982个事件、匿名说话人168段/4个聚类；94段对齐稿中77段有时间重叠候选、13段有多个候选、17段未匹配。所有模块和 run-manifest 状态为 `completed`，源哈希为`1d6119da2d0c4d84049d95d24b082b7379b1ace4d5b7f14cdcccbb8f60948f0c`。录音未改写，结果仅在被忽略的本机`产出/2026-11-10-stage6-merge-verification/`；内容与分人质量仍未经人工核验。验证脚本的合成输入文件名已修正为满足项目严格14位时间戳格式。
 
@@ -68,8 +68,9 @@
 - 性能清单记录每模块 `wallClockSeconds` 和 `execution`（recomputed、reuse、skip 等），以及 process 墙钟和 `getrusage` 峰值内存；峰值统一另记字节，`ruMaxRSSUnit` 明示 Linux 原始值单位 KB、macOS 原始值单位 bytes。只记录测量值，不写性能结论。
 - 共享模块执行边界将可注入引擎/写盘错误持久化为 failed，其他模块可继续且运行清单仍可写出；原子写失败不留下半截目标文件。恢复继续使用源哈希、引擎/参数指纹和产物校验决定 reuse 或重跑。测试为假模型缺失、后续模块成功、原子产物写失败及清单保留状态。
 - 合成媒体测试包括 CBR MP3、Xing MP3、ID3v2 前缀、截断/垃圾输入及 M4A mvhd；文件名测试由 `RecordingStart` 验证脚本的 `20261110120000.wav`。`mac-verify.sh` 增加直接调用该项目解析器测试。
-- 本轮 stage7 结果：Linux `swift build` 通过；`swift test` 68 项通过；`bash scripts/mac-verify.sh` 退出码 0，合成 process 的 Apple/FluidAudio 模块为 unsupported（预期平台限制），process 退出码 1。四个 process 模块现由 IntegratedModuleExecutor 执行/续跑并传入各自产物路径；测试覆盖真实 executor 的首次执行、复用、产物损坏和参数变化。清单 `performance.wallClockSeconds` 在写清单前采样并以 `wallClockExcludesManifestWrite: true` 明示不含清单写盘；清单写盘成功后，`processing-status.json` 写入 `runWallClockSecondsIncludingManifestWrite`。该状态文件不纳入 artifacts 哈希。脚本结束后仓库未生成文件。
-- Mac 编译/测试、Apple 模块性能、FluidAudio 模型缺失实机验证及真实 M4A 变体尚未验证。所有本轮测试输入为代码生成的合成字节/1 秒静音 WAV。
+- 本轮 stage7 结果：Linux `swift build` 通过、`swift test` 68 项通过；Mac 27.2 / arm64 / Swift 6.4.2 构建通过、69 项测试通过，`bash scripts/mac-verify.sh` 退出码 0。静音合成输入下 FluidAudio 从本机缓存加载，分人模块按 `noSpeechDetected` 记录失败、依赖模块跳过，运行状态与清单均成功落盘。四个 process 模块由 `IntegratedModuleExecutor` 执行/续跑；合成测试覆盖执行、复用、损坏产物和参数变化。清单 `performance.wallClockSeconds` 在写清单前采样，并以 `wallClockExcludesManifestWrite: true` 明示不含清单写入；之后 `processing-status.json` 另记含清单写入的总耗时，状态文件不参与 artifacts 哈希。
+- Mac 本机MP3复核：全部处理模块完成；按MP3帧扫描得到8721.432秒，转写覆盖端点一致、覆盖缺口为空。macOS `afinfo` 给出估计值8721.437秒，差5毫秒，小于该MP3采样率下一个36毫秒帧；这是容器/编码器时长估计差异，结果仍保留解析方法。帧扫描改为按采样率累计整数样本数，消除了长文件逐帧浮点累加导致的微小尾隙。续跑再次将转写、环境声、说话人分离和对齐模块标为`reuse`；运行清单正常写入。识别内容和分人质量仍未人工核验。
+- Mac `scripts/mac-verify.sh` 报告现区分“未下载模型”与“从本机缓存加载模型”；首次长MP3运行测得峰值RSS约2.37GB、含清单写入总耗时约285秒。续跑仍需对179MB声音事件JSON做校验和清单哈希，约51秒；这些是单次本机测量，不作为普遍性能结论。FluidAudio模型缺失故障和真实M4A变体尚未实测。
 
 - [文件迁移清单](记录/文件迁移清单.json)：原路径、现路径、每个文件的字节数、SHA-256及权限；包含兼容链接状态。
 - `记录/整理验收.json`：实际验收后生成，包括完整性、路径、原录音可读性、工具路径及压缩包检查。未见此文件前不得把预期检查写成已通过。

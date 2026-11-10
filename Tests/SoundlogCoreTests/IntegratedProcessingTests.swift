@@ -277,6 +277,17 @@ final class IntegratedProcessingTests: XCTestCase {
         XCTAssertEqual(UnifiedOutput.audioDuration(data: tagged).seconds ?? 0, result.seconds ?? -1, accuracy: 0.000001)
     }
 
+    func testMP3FrameScanCompensatesCumulativeFloatingPointError() {
+        let frameCount = 100_000
+        let frame = mp3Frame(version: 2)
+        var data = Data(capacity: frame.count * frameCount)
+        for _ in 0..<frameCount { data.append(frame) }
+
+        let result = UnifiedOutput.audioDuration(data: data)
+        XCTAssertEqual(result.method, "frame-scan")
+        XCTAssertEqual(result.seconds ?? 0, Double(frameCount) * 576.0 / 22_050.0, accuracy: 1e-10)
+    }
+
     func testSyntheticMP3ID3v1AndTrailingGarbageKeepScannedDuration() {
         let frames = mp3Frame() + mp3Frame()
         let tagged = UnifiedOutput.audioDuration(data: frames + Data("TAG".utf8) + Data(repeating: 0, count: 125))

@@ -143,7 +143,7 @@ import SoundlogCore
                         try AtomicFile.write(try encoder.encode(status), to: statusURL)
                     } else if duration != nil {
                         try record("inputCoverage", "incomplete", "覆盖存在缺口或无转写覆盖")
-                        status.modules["inputCoverage"]?.execution = "skip"
+                        status.modules["inputCoverage"]?.execution = "recomputed"
                         status.modules["inputCoverage"]?.wallClockSeconds = Date().timeIntervalSince(coverageStarted)
                         try AtomicFile.write(try encoder.encode(status), to: statusURL)
                     }
