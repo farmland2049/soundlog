@@ -137,6 +137,18 @@ swift build -c release
   - `run-manifest.json`（运行清单与指标）
 - **失败排查**：当处理未完全成功时，先看 `<运行目录>/记录/整理验收.json` 确定哪些文件失败及原因；需要看底层详情时，查看对应文件目录下的 `processing-status.json`（包含各模块的具体错误信息与底层系统错误码）。
 
+## 本地记忆处理（首版）
+
+新增独立本地记忆库，支持逐句证据整理、Markdown 原子记忆、关键词检索、候选确认、更正审核和撤销。采用 Basic Memory 风格的可读笔记与关系，借鉴 Mem0 的增量更新方法；外部模型支持 API 与材料导出／结果导入两种通道，本地模型仅预留接口。
+
+```bash
+python3 scripts/memory.py prepare --date 2026-11-07
+python3 scripts/memory.py export --date 2026-11-07
+python3 scripts/memory.py search 关键词
+```
+
+默认 `记忆库/` 已被 Git 忽略；不接入现有正式知识库，不自动运行外部 API。详细协议、配置、审核及验证见 [本地记忆处理](资料/本地记忆处理.md)。
+
 ## 技术边界
 
 苹果原生转写、声音分类及 FluidAudio 说话人分离均已有本机实跑；识别结果仍未经人工抽查，不承诺识别准确率或处理速度。声音分类候选不等于已确认的地点、活动或现场/外放判断。
