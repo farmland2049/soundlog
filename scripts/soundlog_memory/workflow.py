@@ -82,6 +82,11 @@ class Workflow:
             raise ValueError('证据快照校验失败')
         provenance = {'model': envelope['model'], 'promptVersion': request['promptVersion'], 'requestId': request['requestId'],
                       'batchId': 'batch-' + digest(envelope)[:24]}
+        previous_report = self.store.root / '运行/导入' / (provenance['batchId'] + '.json')
+        if previous_report.exists():
+            previous = read_json(previous_report)
+            if previous.get('state') == 'completed':
+                return {**previous, 'execution': 'reuse'}
         write_json(self.store.root / '运行/导入' / (provenance['batchId'] + '-input.json'), envelope)
         errors, applied, seen = [], [], set()
         for result in results:

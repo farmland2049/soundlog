@@ -52,7 +52,7 @@ def note_text(record):
     lines.extend(['', '## Relations', ''])
     for entity in record.get('entities', []):
         lines.append('- mentions [[soundlog/entities/' + digest(entity)[:24] + ']]')
-    for relation in ('supersedes', 'supersededBy'):
+    for relation in ('supersedes', 'supersededBy', 'mergedInto'):
         if record.get(relation):
             lines.append('- ' + relation + ' [[soundlog/memories/' + record[relation] + ']]')
     for target in record.get('possibleConflicts', []):
@@ -175,7 +175,7 @@ class Store:
                     conn.execute('INSERT INTO memories VALUES (?,?,?,?,?,?,?,?)',
                                  (r['id'], r['date'], r['type'], r['status'], r['lifecycle'], r['content'],
                                   canonical(r.get('entities', [])), normalize(r['content'])))
-                    for relation in ('supersedes', 'supersededBy'):
+                    for relation in ('supersedes', 'supersededBy', 'mergedInto'):
                         if r.get(relation):
                             conn.execute('INSERT INTO relations VALUES (?,?,?)', (r['id'], relation, r[relation]))
                     for entity in r.get('entities', []):

@@ -99,6 +99,7 @@ class MemoryEngine:
         receipt_rel = '运行/已处理/' + event_key + '.json'
         if self.store.path(receipt_rel).exists():
             return {'state': 'reused', **json.loads(self.store.path(receipt_rel).read_text())}
+        requested_proposal = dict(proposal) if proposal else None
         if c['id'] in records and (not proposal or proposal.get('target') in (None, c['id'])):
             proposal = {'action': 'NONE', 'target': c['id'], 'reason': '同一证据及候选的精确重复'}
             allowed_targets = None
@@ -137,6 +138,14 @@ class MemoryEngine:
             updated['provenance'] = old.get('provenance', []) + [provenance]
             updated['revision'] += 1
             updated['updatedAt'] = now()
+            if target == c['id'] and requested_proposal and requested_proposal.get('action') in ('ADD', 'UNRESOLVED'):
+                updated['resolution'] = {'action': requested_proposal['action'], 'reason': requested_proposal['reason']}
+            if c['id'] != target and c['id'] in records:
+                duplicate = dict(records[c['id']])
+                duplicate.update(lifecycle='merged', mergedInto=target, updatedAt=now(), revision=duplicate['revision'] + 1)
+                duplicate['resolution'] = {'action': 'NONE', 'reason': reason}
+                duplicate['provenance'] = duplicate.get('provenance', []) + [provenance]
+                files['笔记/原子记忆/' + c['id'] + '.md'] = note_text(duplicate)
             files['笔记/原子记忆/' + target + '.md'] = note_text(updated)
             result['memoryId'] = target
         elif action in ('UPDATE', 'DELETE'):

@@ -222,6 +222,9 @@ class MemoryTests(unittest.TestCase):
         env = {'schemaVersion': 1, 'requestId': req['requestId'], 'model': 'test',
                'results': [{'chunkId': i['id'], 'proposal': {'action': 'ADD', 'reason': '新内容', 'target': None}} for i in req['items']]}
         self.assertEqual(self.flow.import_result(env)['state'], 'completed')
+        replay = self.flow.import_result(env)
+        self.assertEqual(replay['state'], 'completed')
+        self.assertEqual(replay['execution'], 'reuse')
         self.assertEqual(len(self.store.records()), 1)
 
     def test_api_resume_and_bad_json_retry(self):
@@ -361,6 +364,24 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(len(result['missingChunks']), len(req['items']))
         env['results'] = [{'chunkId': i['id'], 'candidates': []} for i in req['items']]
         self.assertEqual(self.flow.import_result(env)['state'], 'completed')
+
+    def test_secondary_none_marks_imported_duplicate_and_can_undo(self):
+        first = self.add()
+        c = self.validated(content='明天联系张三')
+        second = self.add(c)
+        result = MemoryEngine(self.store).apply(c, {'model': 'resolver'},
+                    {'action': 'NONE', 'target': first['memoryId'], 'reason': '同一原话的同一承诺'}, {first['memoryId']})
+        self.assertEqual(self.store.get(second['memoryId'])['lifecycle'], 'merged')
+        self.assertEqual(len(self.store.search()), 1)
+        self.store.undo(result['operationId'])
+        self.assertEqual(len(self.store.search()), 2)
+
+    def test_secondary_add_records_resolution_without_duplicate(self):
+        self.add()
+        c = self.validated()
+        MemoryEngine(self.store).apply(c, {'model': 'resolver'}, {'action': 'ADD', 'target': None, 'reason': '已核对为新增'}, set())
+        self.assertEqual(len(self.store.records()), 1)
+        self.assertEqual(self.store.records()[0]['resolution']['action'], 'ADD')
 
     def test_local_adapter_is_explicit_placeholder(self):
         with self.assertRaises(NotImplementedError):
