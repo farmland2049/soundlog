@@ -4,7 +4,7 @@ import re
 import uuid
 from datetime import date
 from .evidence import canonical, digest, timestamp
-from .protocol import PROMPT_VERSION, TYPES
+from .protocol import PROMPT_VERSION, TYPES, FUNCTION_USES
 from .store import normalize, note_text, now, write_json
 
 
@@ -18,6 +18,11 @@ def validate_candidate(candidate, evidence, day):
     if not isinstance(candidate, dict):
         raise ValueError('候选必须为对象')
     c = dict(candidate)
+    if 'functionUses' in c:
+        uses = c['functionUses']
+        if not isinstance(uses, list) or not uses or any(not isinstance(v, str) or v not in FUNCTION_USES for v in uses):
+            raise ValueError('functionUses须为有效非空功能数组')
+        c['functionUses'] = sorted(set(uses))
     if c.get('type') not in TYPES or not isinstance(c.get('content'), str) or not c['content'].strip():
         raise ValueError('候选类型或内容无效')
     if c.get('assertion') not in ('explicit', 'suggestion', 'negated', 'reported', 'uncertain'):
@@ -75,8 +80,11 @@ def validate_candidate(candidate, evidence, day):
     identity['content'] = normalize(c['content'])
     identity['evidenceIDs'] = sorted({r['id'] for r in validated})
     c['id'] = 'mem-' + digest(identity)[:24]
-    return {k: c[k] for k in ('id', 'date', 'type', 'content', 'assertion', 'occurredAt', 'subject', 'responsible',
+    result = {k: c[k] for k in ('id', 'date', 'type', 'content', 'assertion', 'occurredAt', 'subject', 'responsible',
                               'dueText', 'dueDate', 'entities', 'evidence')}
+    if 'functionUses' in c:
+        result['functionUses'] = c['functionUses']
+    return result
 
 
 def revision_hash(record):
@@ -84,8 +92,11 @@ def revision_hash(record):
 
 
 def public_record(record):
-    return {k: record.get(k) for k in ('id', 'date', 'type', 'content', 'assertion', 'occurredAt', 'subject',
+    result = {k: record.get(k) for k in ('id', 'date', 'type', 'content', 'assertion', 'occurredAt', 'subject',
                                      'responsible', 'dueText', 'dueDate', 'entities', 'evidence', 'status', 'revision')}
+    if 'functionUses' in record:
+        result['functionUses'] = record['functionUses']
+    return result
 
 
 class MemoryEngine:
@@ -133,6 +144,8 @@ class MemoryEngine:
         if action == 'NONE':
             old = records[target]
             updated = dict(old)
+            if 'functionUses' in old or 'functionUses' in c:
+                updated['functionUses'] = sorted(set(old.get('functionUses', []) + c.get('functionUses', [])))
             refs = {(r['id'], r['quote']): r for r in old['evidence'] + c['evidence']}
             updated['evidence'] = list(refs.values())
             updated['provenance'] = old.get('provenance', []) + [provenance]

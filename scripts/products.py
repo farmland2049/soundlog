@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""Export evidence and import reviewed four-function outputs, offline."""
+import argparse
+import json
+from pathlib import Path
+import sys
+
+from soundlog_memory.evidence import read_json
+from soundlog_memory.store import write_json
+from soundlog_memory.products import export_request, import_result, combine_results, request_progress
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description='日记/纪要/待办/学习笔记的证据导出与结果导入；不自动调用外部模型')
+    p.add_argument('--root', type=Path, default=ROOT/'产出/功能提炼')
+    sub = p.add_subparsers(dest='command', required=True)
+    export = sub.add_parser('export')
+    export.add_argument('--scenes', type=Path, default=ROOT/'产出/大模型分析素材/每日场景-v2')
+    export.add_argument('--date', action='append')
+    export.add_argument('--selection', type=Path, help='可选的局部试用选择文件，包含selections数组')
+    export.add_argument('--ranges', type=Path, help='连续时段选择文件，包含timeRanges数组(from/until)')
+    export.add_argument('--context-count', type=int, default=2)
+    ingest = sub.add_parser('import')
+    ingest.add_argument('--file', type=Path, required=True)
+    combine = sub.add_parser('combine')
+    combine.add_argument('--files', type=Path, nargs='+', required=True)
+    combine.add_argument('--output', type=Path, required=True)
+    status=sub.add_parser('status')
+    status.add_argument('--request',required=True)
+    args = p.parse_args(argv)
+    try:
+        if args.command == 'export':
+            result = export_request(args.scenes, args.root, days=args.date,
+                selections=read_json(args.selection)['selections'] if args.selection else None,
+                time_ranges=read_json(args.ranges)['timeRanges'] if args.ranges else None,
+                context_count=args.context_count)
+        elif args.command == 'import':
+            result = import_result(args.root, read_json(args.file))
+        elif args.command == 'status':
+            result = request_progress(args.root,args.request)
+        else:
+            envelope, result = combine_results(args.root, [read_json(p) for p in args.files])
+            if args.output.exists() and read_json(args.output) != envelope:
+                raise ValueError('合并输出已存在且内容不同，拒绝覆盖')
+            write_json(args.output, envelope)
+            write_json(args.output.with_suffix('.merge-receipt.json'), result)
+            result = {**result, 'output': str(args.output)}
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 1 if result.get('state') == 'partial' else 0
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        print('功能提炼失败: '+str(exc), file=sys.stderr)
+        return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -80,6 +80,7 @@ fi
 success_count=0
 failure_count=0
 skipped_count=0
+aggregate_failed=0
 
 for idx in "${!audio_files[@]}"; do
     file="${audio_files[$idx]}"
@@ -98,6 +99,13 @@ for idx in "${!audio_files[@]}"; do
         echo "       项目按绝对时间轴映射，文件名代表起始录音时间。"
         echo "       请重命名后再次处理，原文件暂留于 $INBOX_DIR/。"
         skipped_count=$((skipped_count + 1))
+        continue
+    fi
+
+    # Never overwrite an existing original, even when bytes might be identical.
+    if [[ -e "$ARCHIVE_DIR/$filename" || -L "$ARCHIVE_DIR/$filename" ]]; then
+        echo "[失败] 归档目标已存在，源文件保留: $ARCHIVE_DIR/$filename"
+        failure_count=$((failure_count + 1))
         continue
     fi
 
@@ -126,13 +134,35 @@ for idx in "${!audio_files[@]}"; do
         file_out=$(find "$run_dir" -maxdepth 1 -mindepth 1 -type d -name "*-${filename}" | head -n 1)
         if [[ -n "$file_out" && -d "$file_out" ]]; then
             echo "生成大模型分析素材..."
-            python3 scripts/prepare_llm_material.py "$file_out" "$LLM_OUTPUT_DIR" "$base_name"
+            if ! python3 scripts/prepare_llm_material.py "$file_out" "$LLM_OUTPUT_DIR" "$base_name"; then
+                echo "[失败] 素材生成失败，源文件保留在待处理箱。"
+                failure_count=$((failure_count + 1))
+                continue
+            fi
         else
-            echo "[警告] 未定位到产物子目录: $run_dir/*-$filename"
+            echo "[失败] 未定位到产物子目录: $run_dir/*-$filename"
+            failure_count=$((failure_count + 1))
+            continue
         fi
 
-        # 移动源文件至归档文件夹
-        mv "$file" "$ARCHIVE_DIR/"
+        # Same-filesystem hard-link then unlink: create-only, no clobber, no copy.
+        # On failure leave the source intact and report failure; never force replace.
+        if ! python3 - "$file" "$ARCHIVE_DIR/$filename" <<'PYARCHIVE'
+import os
+from pathlib import Path
+import sys
+source, target = map(Path, sys.argv[1:])
+try:
+    os.link(source, target, follow_symlinks=False)
+    source.unlink()
+except OSError as exc:
+    print('归档失败，未覆盖已有文件: ' + str(exc), file=sys.stderr)
+    sys.exit(1)
+PYARCHIVE
+        then
+            failure_count=$((failure_count + 1))
+            continue
+        fi
         echo "[归档] 源录音已移动至: $ARCHIVE_DIR/${filename} (供后续决定是否删除)"
         success_count=$((success_count + 1))
     else
@@ -146,7 +176,10 @@ if [[ $success_count -gt 0 ]]; then
     echo ""
     echo "=================================================="
     echo "更新跨文件按天聚合场景库 (scripts/build_daily_scenes.py)..."
-    python3 scripts/build_daily_scenes.py
+    if ! python3 scripts/build_daily_scenes.py; then
+        echo "[失败] 每日素材未完整生成；底层产物与已归档原音仍保留。"
+        aggregate_failed=1
+    fi
     echo "=================================================="
 fi
 
@@ -158,6 +191,11 @@ echo "  成功归档数: $success_count"
 echo "  处理失败数: $failure_count"
 echo "  跳过规范数: $skipped_count"
 echo "  大模型素材目录: $LLM_OUTPUT_DIR/"
-echo "  按天聚合场景库: $LLM_OUTPUT_DIR/每日场景/"
+echo "  按天聚合场景库: $LLM_OUTPUT_DIR/每日场景-v2/ (latest.json 指向完整快照)"
 echo "  归档源文件目录: $ARCHIVE_DIR/"
 echo "=================================================="
+
+if [[ $failure_count -gt 0 || $skipped_count -gt 0 || $aggregate_failed -gt 0 ]]; then
+    exit 1
+fi
+exit 0

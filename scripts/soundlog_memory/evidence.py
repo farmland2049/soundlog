@@ -59,14 +59,14 @@ def validate_doc(doc):
     return origin
 
 
-def build_evidence(runs, day):
-    lo, hi = day_bounds(day)
+def scan_artifacts(runs):
+    """Select valid transcript and acoustic snapshots independently, once per batch."""
     runs = Path(runs)
-    selected, warnings = {}, []
-    # Prefer the newest valid raw transcript; aligned labels are optional enrichment.
+    selected, acoustic, warnings = {}, {}, []
     paths = sorted(runs.rglob('raw.json'))
-    aligned_only = [p for p in runs.rglob('speaker-aligned-transcript.json') if not (p.parent / 'raw.json').exists()]
-    for path in paths + sorted(aligned_only):
+    paths += sorted(p for p in runs.rglob('speaker-aligned-transcript.json')
+                    if not (p.parent / 'raw.json').exists())
+    for path in paths:
         try:
             doc = read_json(path)
             origin = validate_doc(doc)
@@ -78,6 +78,44 @@ def build_evidence(runs, day):
                 selected[key] = (rank, path, doc, origin)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             warnings.append({'artifact': str(path), 'error': str(exc)})
+    for path in sorted(runs.rglob('sound-events.json')):
+        try:
+            doc = read_json(path)
+            origin = validate_doc({**doc, 'segments': []})
+            # Validate every event before considering this snapshot eligible.
+            for ev in doc['events']:
+                validate_doc({**doc, 'segments': [{**ev, 'text': ''}]})
+                if not isinstance(ev['category'], str) or not ev['category']:
+                    raise ValueError('声学类别缺失')
+                indices = ev.get('sourceWindowIndices', [])
+                if not isinstance(indices, list) or any(type(i) is not int or i < 0 or
+                        ('windowCount' in doc and i >= doc['windowCount']) for i in indices):
+                    raise ValueError('声学窗口索引无效')
+            sidecar = doc.get('windowCandidatesFile')
+            if sidecar:
+                if not isinstance(sidecar, str) or Path(sidecar).name != sidecar:
+                    raise ValueError('声学窗口文件名必须是同目录文件')
+                if not (path.parent / sidecar).is_file():
+                    warnings.append({'artifact': str(path.parent / sidecar), 'error': '原始声学窗口文件缺失'})
+            key = (doc['sourceSHA256'], origin)
+            rank = (path.stat().st_mtime_ns, str(path))
+            if key not in acoustic or rank > acoustic[key][0]:
+                acoustic[key] = (rank, path, doc, origin)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            warnings.append({'artifact': str(path), 'error': str(exc)})
+    return selected, acoustic, warnings
+
+
+def artifact_source(path, doc):
+    return {'sourceFile': Path(doc['sourcePath']).name, 'reportedPath': doc['sourcePath'],
+            'artifact': str(path.resolve()), 'artifactSHA256': hashlib.sha256(path.read_bytes()).hexdigest(),
+            'accuracyAssessment': doc.get('accuracyAssessment', 'not_evaluated')}
+
+
+def build_evidence(runs, day, *, catalog=None, include_references=False):
+    lo, hi = day_bounds(day)
+    selected, acoustic, scan_warnings = catalog if catalog is not None else scan_artifacts(runs)
+    warnings = list(scan_warnings)
     utterances, sounds, sources = {}, {}, {}
     for sha, (_, path, doc, origin) in sorted(selected.items()):
         labels = {}
@@ -103,31 +141,33 @@ def build_evidence(runs, day):
             candidates = labels.get((seg['startOffsetSeconds'], seg['endOffsetSeconds'], seg['text']), [])
             item['speakers'] = [sha + ':' + s for s in sorted(set(candidates)) if isinstance(s, str)]
             utterances[item['id']] = item
-            sources[sha] = {'sourceFile': item['sourceFile'], 'reportedPath': doc['sourcePath'],
-                            'artifact': str(path.resolve()), 'artifactSHA256': hashlib.sha256(path.read_bytes()).hexdigest(),
-                            'accuracyAssessment': doc.get('accuracyAssessment', 'not_evaluated')}
-        sound_path = path.parent / 'sound-events.json'
-        try:
-            sd = read_json(sound_path)
-            if sd['sourceSHA256'] != sha or sd['recordingStartLocal'] != doc['recordingStartLocal']:
-                raise ValueError('声学来源不一致')
-            for ev in sd['events']:
-                start, end = timestamp(ev['absoluteStartLocal']), timestamp(ev['absoluteEndLocal'])
-                if end < start:
-                    raise ValueError('声学时间范围倒退')
-                if overlaps(start, end, lo, hi):
-                    item = {k: ev[k] for k in ('category', 'startOffsetSeconds', 'endOffsetSeconds')}
-                    item.update(sourceSHA256=sha, start=ev['absoluteStartLocal'], end=ev['absoluteEndLocal'], interpretation=None)
-                    for k in ('confidence', 'averageConfidence', 'maximumConfidence'):
-                        if k in ev:
-                            item[k] = ev[k]
-                    item['id'] = 'ac-' + digest(item)[:24]
-                    sounds[item['id']] = item
-                    sources.setdefault(sha, {'sourceFile': Path(doc['sourcePath']).name, 'reportedPath': doc['sourcePath'],
-                                             'artifact': str(path.resolve()), 'artifactSHA256': hashlib.sha256(path.read_bytes()).hexdigest(),
-                                             'accuracyAssessment': doc.get('accuracyAssessment', 'not_evaluated')})
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            warnings.append({'artifact': str(sound_path), 'error': str(exc)})
+            if sha not in sources:
+                sources[sha] = artifact_source(path, doc)
+    for (sha, origin), (_, path, doc, _) in sorted(acoustic.items()):
+        if sha in selected and selected[sha][3] != origin:
+            warnings.append({'artifact': str(path), 'error': '声学来源起点与转写不一致'})
+            continue
+        for event_index, ev in enumerate(doc['events']):
+            start, end = timestamp(ev['absoluteStartLocal']), timestamp(ev['absoluteEndLocal'])
+            if not overlaps(start, end, lo, hi):
+                continue
+            item = {k: ev[k] for k in ('category', 'startOffsetSeconds', 'endOffsetSeconds')}
+            item.update(sourceSHA256=sha, start=ev['absoluteStartLocal'], end=ev['absoluteEndLocal'], interpretation=None)
+            for k in ('confidence', 'averageConfidence', 'maximumConfidence'):
+                if k in ev:
+                    item[k] = ev[k]
+            item['id'] = 'ac-' + digest(item)[:24]
+            if include_references:
+                item['reference'] = {'artifact': str(path.resolve()), 'eventIndex': event_index,
+                                     'sourceWindowIndices': ev.get('sourceWindowIndices', []),
+                                     'windowCandidatesFile': doc.get('windowCandidatesFile'),
+                                     'confidenceNote': '合并事件未必有置信度；原始窗口候选分数按索引回查，不估算分数。'}
+            sounds[item['id']] = item
+            if sha not in sources:
+                sources[sha] = artifact_source(path, doc)
+            if 'soundArtifact' not in sources[sha]:
+                sources[sha]['soundArtifact'] = str(path.resolve())
+                sources[sha]['soundArtifactSHA256'] = hashlib.sha256(path.read_bytes()).hexdigest()
     package = {'schemaVersion': 1, 'date': day, 'utterances': sorted(utterances.values(), key=lambda x: (x['start'], x['id'])),
                'acoustics': sorted(sounds.values(), key=lambda x: (x['start'], x['id']))}
     package['fingerprint'] = digest(package)

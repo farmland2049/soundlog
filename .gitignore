@@ -15,3 +15,10 @@
 /reports/
 /记忆库/
 __pycache__/
+
+# Public product plans and usage guides; private materials remain ignored.
+!/资料/产品目标与迭代开发测试计划.md
+!/资料/2026-11-13-产品功能与内容价值标准.md
+!/资料/场景素材与原文检索.md
+!/资料/四类功能提炼.md
+!/资料/本地功能草稿试验.md
