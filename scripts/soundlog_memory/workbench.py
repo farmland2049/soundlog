@@ -15,7 +15,7 @@ def create_only(path, value):
         handle.write('\n')
 
 
-def prepare(root, rid, output, *, count=10, completed=None):
+def prepare(root, rid, output, *, count=10, completed=None, order_from=None):
     if type(count) is not int or not 1 <= count <= 240:
         raise ValueError('count须为1—240')
     request = load_request(root, rid)
@@ -25,7 +25,28 @@ def prepare(root, rid, output, *, count=10, completed=None):
         if envelope['requestId'] != rid:
             raise ValueError('已审结果属于其他请求')
         done = {b['key'] for b in envelope['results']}
-    selected = [i for i in request['items'] if i['key'] not in done][:count]
+    items = request['items']
+    if order_from is not None:
+        ranking = order_from if isinstance(order_from, dict) else read_json(order_from)
+        if not isinstance(ranking, dict):
+            raise ValueError('排序清单格式无效')
+        if ranking.get('requestId') != rid:
+            raise ValueError('排序清单属于其他请求')
+        buckets = ranking.get('buckets')
+        if not isinstance(buckets, dict) or set(buckets) != {'high', 'medium', 'low'}:
+            raise ValueError('排序清单须含high/medium/low三类')
+        keys = []
+        for bucket in ('high', 'medium', 'low'):
+            rows = buckets[bucket]
+            if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+                raise ValueError('排序清单分组格式无效')
+            keys.extend(row.get('key') for row in rows)
+        request_by_key = {item['key']: item for item in items}
+        if (any(not isinstance(key, str) for key in keys)
+                or len(keys) != len(set(keys)) or set(keys) != set(request_by_key)):
+            raise ValueError('排序清单必须无重复且完整覆盖请求块')
+        items = [request_by_key[key] for key in keys]
+    selected = [i for i in items if i['key'] not in done][:count]
     packet = {'schemaVersion': 1, 'requestId': rid, 'instructions':
               '逐句审读；事实用rows引用原句，coverage必须显式覆盖全部核心行。contextRows只作参考，不计完成。',
               'blocks': [{'key': i['key'], 'date': i['date'],

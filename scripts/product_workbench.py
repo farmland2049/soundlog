@@ -13,12 +13,15 @@ def main():
     p.add_argument('--root',type=Path,default=ROOT/'产出/功能提炼')
     sub=p.add_subparsers(dest='command',required=True)
     a=sub.add_parser('prepare');a.add_argument('--request',required=True);a.add_argument('--count',type=int,default=10)
-    a.add_argument('--completed',type=Path);a.add_argument('--output',required=True,type=Path)
+    a.add_argument('--completed',type=Path);a.add_argument('--order-from',type=Path)
+    a.add_argument('--output',required=True,type=Path)
     b=sub.add_parser('compile');b.add_argument('--decisions',required=True,type=Path);b.add_argument('--output',required=True,type=Path)
     args=p.parse_args()
     try:
         if args.command=='prepare':
-            out=prepare(args.root,args.request,args.output,count=args.count,completed=read_json(args.completed) if args.completed else None)
+            out=prepare(args.root,args.request,args.output,count=args.count,
+                        completed=read_json(args.completed) if args.completed else None,
+                        order_from=read_json(args.order_from) if args.order_from else None)
         else:
             envelope=compile_review(args.root,read_json(args.decisions));create_only(args.output,envelope)
             out={'output':str(args.output),'reviewedBlocks':len(envelope['results']),'imported':False}

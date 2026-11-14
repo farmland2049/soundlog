@@ -1,6 +1,7 @@
 import copy
 import json
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import unittest
@@ -333,6 +334,88 @@ class ProductTests(unittest.TestCase):
         s=(location/'materials.json').read_text()
         self.assertNotIn('/private/',s)
         self.assertNotIn(str(self.runs),s)
+
+    def test_unified_search_keeps_raw_and_candidate_lanes_separate(self):
+        from soundlog_memory.unified_search import search_soundlog
+        result=import_result(self.products,self.envelope())
+        out=search_soundlog(self.scenes,self.products,[result['resultId']], '明天',day='2026-11-07')
+        self.assertEqual(out['rawEvidence']['totalMatches'],2)
+        self.assertEqual(out['functionalCandidates']['totalMatches'],1)
+        self.assertEqual(out['sourceSnapshotId'],self.request['sourceSnapshotId'])
+        self.assertIn('不是自然语言问答',out['boundary'])
+
+    def test_unified_search_rejects_different_snapshot(self):
+        from soundlog_memory.unified_search import search_soundlog
+        result=import_result(self.products,self.envelope())
+        latest=self.newer_snapshot()
+        with self.assertRaisesRegex(ValueError,'同一证据快照'):
+            search_soundlog(latest,self.products,[result['resultId']],'明天')
+
+    def newer_snapshot(self, *, change_day=None):
+        number=getattr(self,'_newer_snapshot_number',0)+1;self._newer_snapshot_number=number
+        runs=self.root/f'newer-runs-{number}';shutil.copytree(self.runs,runs)
+        if change_day:
+            for name in ('raw.json','speaker-aligned-transcript.json','sound-events.json'):
+                path=runs/change_day/name;doc=json.loads(path.read_text())
+                doc['segments'][0]['text']+=' 内容已变化'
+                write_json(path,doc)
+        day='2026-11-09';p=runs/day;p.mkdir()
+        doc={'sourceSHA256':'3'*64,'sourcePath':'/private/original/'+day+'.mp3',
+             'recordingStartLocal':day+'T10:00:00','status':'completed_with_text',
+             'segments':[{'startOffsetSeconds':0,'endOffsetSeconds':2,'text':'第三天的独立测试原文','speakerCandidates':['S1']} ]}
+        for name in ('raw.json','speaker-aligned-transcript.json'):
+            write_json(p/name,doc)
+        write_json(p/'sound-events.json',{**doc,'events':[]})
+        scenes=self.root/f'newer-scenes-{number}';build_snapshot(runs,scenes)
+        return scenes
+
+    def test_rebase_exact_completed_reviews_across_new_snapshot(self):
+        from soundlog_memory.products import rebase_completed_results
+        sources=[]
+        for day in ('2026-11-07','2026-11-08'):
+            exp=export_request(self.scenes,self.products,days=[day])
+            req=load_request(self.products,exp['requestId'])
+            env={'schemaVersion':1,'requestId':req['requestId'],'processor':'test reviewer',
+                 'results':[self.block(item) for item in req['items']]}
+            sources.append(import_result(self.products,env)['resultId'])
+        scenes=self.newer_snapshot()
+        target=export_request(scenes,self.products,days=['2026-11-07','2026-11-08'])
+        target_request=load_request(self.products,target['requestId'])
+        source_requests=[load_request(self.products,import_result_path) for import_result_path in
+                         [json.loads((self.products/'results'/rid/'input.json').read_text())['requestId'] for rid in sources]]
+        self.assertNotEqual(source_requests[0]['sourceSnapshotId'],target_request['sourceSnapshotId'])
+        envelope,report=rebase_completed_results(self.products,target['requestId'],sources)
+        self.assertEqual(report['exactMaterialBlocks'],len(target_request['items']))
+        self.assertEqual(report['uniqueCoreUtterances'],4)
+        self.assertEqual(import_result(self.products,envelope)['state'],'completed')
+
+    def test_rebase_rejects_changed_material_or_incomplete_coverage(self):
+        from soundlog_memory.products import rebase_completed_results
+        from soundlog_memory.evidence import digest
+        old=import_result(self.products,self.envelope())
+        changed_scenes=self.newer_snapshot(change_day='2026-11-07')
+        changed=export_request(changed_scenes,self.products,days=['2026-11-07','2026-11-08'])
+        with self.assertRaises(ValueError):
+            rebase_completed_results(self.products,changed['requestId'],[old['resultId']])
+        latest=self.newer_snapshot()
+        target=export_request(latest,self.products,days=['2026-11-07','2026-11-08'])
+        partial=import_result(self.products,{**self.envelope(),'results':self.envelope()['results'][:1]})
+        with self.assertRaises(ValueError):
+            rebase_completed_results(self.products,target['requestId'],[partial['resultId']])
+        with self.assertRaises(ValueError):
+            rebase_completed_results(self.products,target['requestId'],[old['resultId'],old['resultId']])
+        changed_contract=copy.deepcopy(self.request);changed_contract.pop('requestId')
+        changed_contract['contextCount']=1
+        changed_contract['requestId']='prodreq-'+digest(changed_contract)[:24]
+        write_json(self.products/'requests'/changed_contract['requestId']/'request.json',changed_contract)
+        with self.assertRaises(ValueError):
+            rebase_completed_results(self.products,changed_contract['requestId'],[old['resultId']])
+        duplicate_target=copy.deepcopy(self.request);duplicate_target.pop('requestId')
+        duplicate_target['items'].append(copy.deepcopy(duplicate_target['items'][0]))
+        duplicate_target['requestId']='prodreq-'+digest(duplicate_target)[:24]
+        write_json(self.products/'requests'/duplicate_target['requestId']/'request.json',duplicate_target)
+        with self.assertRaises(ValueError):
+            rebase_completed_results(self.products,duplicate_target['requestId'],[old['resultId']])
 
 
 if __name__=='__main__':unittest.main()

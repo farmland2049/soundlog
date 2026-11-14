@@ -399,6 +399,79 @@ def combine_results(root, envelopes):
     return envelope, report
 
 
+def rebase_completed_results(root, target_request_id, source_result_ids):
+    """Reuse completed reviews only when every source block exactly matches a target block."""
+    root = Path(root).resolve()
+    if (not isinstance(source_result_ids, list) or not source_result_ids
+            or any(not isinstance(rid, str) for rid in source_result_ids)
+            or len(source_result_ids) != len(set(source_result_ids))):
+        raise ValueError('来源结果编号须为非空且无重复的字符串列表')
+    target = load_request(root, target_request_id)
+    target_items = {item['key']: item for item in target['items']}
+    if len(target_items) != len(target['items']):
+        raise ValueError('目标请求含重复块键')
+    target_contract = {key: target.get(key) for key in
+                       ('promptVersion', 'promptSHA256', 'scope', 'timeRanges', 'contextCount')}
+    merged, source_details, processors = {}, [], set()
+    expected_by_source = set()
+    from .reading import load_verified_result
+    for result_id in source_result_ids:
+        receipt, _ = load_verified_result(root, result_id)
+        if (receipt.get('state') != 'completed'
+                or receipt.get('missingChunks')
+                or receipt.get('processedChunks') != receipt.get('totalChunks')):
+            raise ValueError('只能迁移已完成且无缺块的来源结果: ' + result_id)
+        source_request = load_request(root, receipt.get('requestId'))
+        contract = {key: source_request.get(key) for key in target_contract}
+        if contract != target_contract:
+            raise ValueError('来源与目标请求的提示版本、范围或上下文设置不同')
+        source_input = read_json(root / 'results' / result_id / 'input.json')
+        if (source_input.get('requestId') != source_request['requestId']
+                or source_input.get('schemaVersion') != 1
+                or not isinstance(source_input.get('results'), list)):
+            raise ValueError('来源结果输入与请求不匹配: ' + result_id)
+        old_items = {item['key']: item for item in source_request['items']}
+        if len(old_items) != len(source_request['items']):
+            raise ValueError('来源请求含重复块键')
+        if len(source_input['results']) != len(old_items):
+            raise ValueError('来源结果并非完整请求')
+        seen = set()
+        for block in source_input['results']:
+            key = block.get('key') if isinstance(block, dict) else None
+            if not isinstance(key, str) or key not in old_items or key in seen:
+                raise ValueError('来源结果包含未知或重复块键')
+            seen.add(key)
+            if key not in target_items or old_items[key] != target_items[key]:
+                raise ValueError('来源块的原文、上下文或块定义与目标不完全一致: ' + key)
+            if key in merged:
+                raise ValueError('多个来源结果覆盖同一目标块: ' + key)
+            validate_block(block, old_items[key])
+            merged[key] = block
+        if seen != set(old_items):
+            raise ValueError('来源结果遗漏请求块')
+        if expected_by_source & seen:
+            raise ValueError('来源请求之间存在重复块')
+        expected_by_source |= seen
+        processors.add(source_input['processor'])
+        source_details.append({'resultId': result_id, 'requestId': source_request['requestId'],
+                               'sourceSnapshotId': source_request['sourceSnapshotId'],
+                               'blocks': len(seen)})
+    if set(merged) != set(target_items):
+        raise ValueError('来源结果未完整覆盖目标请求: missing=' + str(len(set(target_items)-set(merged)))
+                         + ', extra=' + str(len(set(merged)-set(target_items))))
+    envelope = {'schemaVersion': 1, 'requestId': target_request_id,
+                'processor': ' / '.join(sorted(processors)),
+                'results': [merged[item['key']] for item in target['items']]}
+    report = {'targetRequestId': target_request_id,
+              'targetSnapshotId': target['sourceSnapshotId'],
+              'sourceResults': source_details,
+              'exactMaterialBlocks': len(merged),
+              'uniqueCoreUtterances': len({e['id'] for item in target['items']
+                                           for e in item['material']['utterances']}),
+              'envelopeSHA256': digest(envelope)}
+    return envelope, report
+
+
 def request_progress(root, rid):
     """Read-only progress: exports and local drafts never count as imported work."""
     root=Path(root).resolve();request=load_request(root,rid)

@@ -39,6 +39,26 @@ class WorkbenchTests(unittest.TestCase):
             p=Path(temp)/'packet.json';prepare('.','r',p,count=1)
             import json
             self.assertEqual(json.loads(p.read_text())['blocks'][0]['coverage'],[])
+    def test_prepare_uses_complete_priority_order_without_marking_skipped_blocks_done(self):
+        import json
+        self.request['items']=[self.item,dict(self.item,key='b'),dict(self.item,key='c')]
+        with tempfile.TemporaryDirectory() as temp:
+            ranking=Path(temp)/'ranking.json'
+            ranking.write_text(json.dumps({'requestId':'r','buckets':{
+                'high':[{'key':'c'}], 'medium':[{'key':'a'}], 'low':[{'key':'b'}]}}))
+            packet=Path(temp)/'packet.json'
+            result=prepare('.', 'r', packet, count=2, order_from=ranking)
+            self.assertEqual([b['key'] for b in json.loads(packet.read_text())['blocks']],['c','a'])
+            self.assertEqual(result['remaining'],3)
+    def test_prepare_rejects_incomplete_priority_order(self):
+        import json
+        self.request['items']=[self.item,dict(self.item,key='b')]
+        with tempfile.TemporaryDirectory() as temp:
+            ranking=Path(temp)/'ranking.json'
+            ranking.write_text(json.dumps({'requestId':'r','buckets':{
+                'high':[{'key':'a'}], 'medium':[], 'low':[]}}))
+            with self.assertRaisesRegex(ValueError,'完整覆盖'):
+                prepare('.', 'r', Path(temp)/'packet.json', count=1, order_from=ranking)
     def test_create_only_protects_existing_review(self):
         with tempfile.TemporaryDirectory() as temp:
             p=Path(temp)/'review.json';create_only(p,{'first':True})

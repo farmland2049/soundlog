@@ -11,7 +11,8 @@ from soundlog_memory.reading import publish_reading, load_verified_result
 from soundlog_memory.reconciliation import compare_candidates
 from soundlog_memory.workbench import create_only
 from soundlog_memory.store import Store
-from soundlog_memory.products import export_request, import_result, combine_results, request_progress
+from soundlog_memory.products import (export_request, import_result, combine_results,
+                                      rebase_completed_results, request_progress)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -40,6 +41,10 @@ def main(argv=None):
     compare.add_argument('--output',type=Path,required=True)
     status=sub.add_parser('status')
     status.add_argument('--request',required=True)
+    rebase=sub.add_parser('rebase', help='仅当来源块与新请求材料完全一致时重绑已完成结果')
+    rebase.add_argument('--target-request',required=True)
+    rebase.add_argument('--source-results',nargs='+',required=True)
+    rebase.add_argument('--output',type=Path,required=True)
     args = p.parse_args(argv)
     try:
         if args.command == 'export':
@@ -63,6 +68,14 @@ def main(argv=None):
             result = publish_reading(args.root,read_json(args.outline))
         elif args.command == 'status':
             result = request_progress(args.root,args.request)
+        elif args.command == 'rebase':
+            envelope, report = rebase_completed_results(args.root,args.target_request,args.source_results)
+            receipt_path=args.output.with_suffix('.rebase-receipt.json')
+            if args.output == receipt_path or args.output.exists() or receipt_path.exists():
+                raise ValueError('迁移输出或回执已存在，拒绝覆盖')
+            create_only(args.output,envelope)
+            create_only(receipt_path,report)
+            result={**report,'output':str(args.output),'receipt':str(receipt_path)}
         else:
             envelope, result = combine_results(args.root, [read_json(p) for p in args.files])
             if args.output.exists() and read_json(args.output) != envelope:
