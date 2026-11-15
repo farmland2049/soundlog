@@ -1,0 +1,62 @@
+# Soundlog 自动处理约定
+
+适用入口：在项目根运行 `python3 scripts/soundlog_pipeline.py tick`。
+脚本不调用语义模型；定时唤醒的当前 Codex agent 负责真正阅读材料与语义筛选。
+用户已授权发现新音频后执行本机转写与全套内容交付，不需要重复逐批确认。
+不安装依赖、不下载或试验本地语义模型、不上传音频、不确认新身份、不提交或推送；ASR沿用现有音频引擎及缓存。
+
+## 执行到完成
+
+1. 读 AGENTS.md 和 PROJECT_STATUS.md，运行 tick。同时检查 `记忆库/运行/自动管线/questions/` 中只有request.json而没有answer.json的问题；有问题时先读取问题和检索证据、按需补充检索，用 `soundlog_library.py answer` 完成带引文回答。无音频、无未完成任务和问题时才安静结束，不生成空日记。
+2. tick 会处理稳定至少60秒、14位时间戳命名的音频，复用现有音频流水线，生成不可变每日场景和完整请求。失败时读私有 audio.log 并修复可恢复问题，绝不伪造转写。
+3. awaiting_agent：读取状态给出的 requestDirectory/instructions.md 与 request.json。逐块读取完整 utterances 和 contextUtterances，用 agent 自带能力完成四类提炼。以产品实际用途判断价值；无法理解的内容可以没有事实，但每条原文须有 coverage 决策和理由。保留原时间轴，按时间间隔与内容判断场景，不能凭相邻时间认定同一事件；区分用户补充、外部播客/媒体和现场来源，未能辨识则保留未知。不得将英语测评答案或播客经历写成用户履历。身份只承接已有明确且范围受限的用户确认。
+4. 材料较长时使用 product_workbench.py 的 prepare/compile 分批保存到 `记忆库/运行/自动管线/`；每批读完即保存，不预标未读。合并全部块为符合 products.py 原格式的 envelope，填写实际 processor。用 `soundlog_pipeline.py ingest --file 完整结果.json` 导入。代码检查全部块覆盖与逐字引文，但语义仍由agent判断。
+5. awaiting_screening：读取 resultId 对应 facts.json，逐条核对摘要与实际引文，必要时回到原文邻接片段。生成 screening.json，格式见下。明确且有用途的内容保留；语义不全、主体/对象不明而无法形成有意义场景的内容暂缓，不补造。观点只按当时话语保留，健康/技术数字不自动成为专业结论；历史请求/计划/承诺不当当前任务。每条必须有决策、理由；学习材料明确分儿童/成人，无法分类的学习用途可暂缓。
+6. `soundlog_pipeline.py publish --result 结果编号 --screening 筛选.json`。只有完整筛选与来源哈希通过后才生成交付包和目录指针。读回 receipt，逐项核对交付文件哈希、首页与来源链接，抽查几条实际原文；报告真实新增日期、保留/暂缓数量与入口。正式 Basic Memory 新增写入仍须具体授权，不自动扩大两日试点。
+7. 完成下述awaiting_enrichment扩展阶段并finish后，再次 tick，直到队列与输入都清空；中断后从 state.json 继续，保留中间决策，不重复要求用户审核。
+
+## 筛选数据
+
+```json
+{
+  "resultId": "product-由实际导入返回",
+  "reviewer": "实际agent与审阅范围",
+  "rows": [
+    {"id":"实际fact编号", "decision":"retain", "reason":"基于具体引文的保留理由", "categories":["journal"]},
+    {"id":"其他实际fact编号", "decision":"defer", "reason":"关键对象缺失，无法还原场景"}
+  ]
+}
+```
+
+分类允许 journal、minutes、actions、child_learning、adult_learning。前三类须在原 fact.functionUses 内；两种学习分类须有原 learning 用途。允许多用途，不重复造事实。fact不存在时仍提交空 rows，实现“已读但没有有意义内容”的完整交付。
+
+## 首版最终交付
+
+- `产出/自动交付/README.md`：按天导航，每个日期指向最新已完成交付包。
+- 每日五份 Markdown：每日记录、讨论纪要、录音中的事项、儿童学习、成人学习与知识。
+- 每日原文索引：录音起止时间、原始文件偏移、引用正文；Markdown和HTML都可回查。
+- 每批 index.html：直接本机打开即可关键词检索，点原文回溯；search.json 为可复用结构化素材。
+- screening.json：全部保留/暂缓决策；receipt.json：状态与全部交付文件哈希。
+- 此版不提供自主执行待办、自动人物身份登记或未经检索的自然语言回答；用户在本线程问录音问题时，agent先检索交付内容并用原文回答。
+
+持续运行由 Codex 本线程每天8:00（上海时间）唤醒执行上述流程。电脑和应用须可运行；这不是离线守护程序或实时文件系统监听。脚本单次运行也可手动触发。
+
+新增日交付：筛选清单可附 dailyReviews，键为实际日期，每日含 overview（agent基于当日材料的概括）和 highlights（当日保留fact编号数组）；应实际填写，未填仅生成索引，不能称已完成每日复盘。交付器自动生成日期首页、timeline.md/json、daily-review.md/json和内容卡片，并刷新事项线索账本。事项自动跨天归并尚未实现，当前状态保持未知。
+
+证据问答入口：`python3 scripts/soundlog_library.py ask 问题 --query 检索词` 可重复传词，默认搜索已交付内容及可用的完整原文快照。读取其目录request.json，必要时用更多词补查。回答JSON须含questionId、reviewer、status(answered/unknown)、claims（各项text与evidence的id/quote）、unknown。程序核对引用，结论仍由agent根据实际原文判断。用 `python3 scripts/soundlog_library.py answer --question 问题编号 --file 回答.json` 保存，禁止假装浏览器已能即时调用模型。
+
+## 完整产品扩展阶段（A—F）
+
+新批次 publish 后状态为 awaiting_enrichment，而非整个任务完成。继续阅读所有相关证据并合并维护 `记忆库/运行/产品功能/derived-spec.json` 和 `task-links.json`。派生方案含schemaVersion=1、reviewer、sourceResultId（当前resultId），topics、topicRelations、cleanDocuments、marks、intents、writingPlans；字段和约束以 `derived_products.py` 的实际验证器和已保存实例为准。生成有出处的知识卡，明确分儿童/成人；跨天关联需审阅理由，关系是主题、补充、冲突或问题，不推断因果。新增联想单独标记。规整稿绑定完整原句，保留否定、条件、时间和数字；专名不清留未知。MARK先判断是否现场指令、引用、未知或非口令；历史请求只生成draft。没有相应材料时可以为空，但必须实际读过，不能用空数组跳过有价值内容。
+
+事项关联支持same_task、possible_same_task、contradicts、unrelated；撤回用新id、relation=revoke、target=既有关联ID。每项附reviewer和reason。只有same_task会合并，可能关联不改变状态。状态序列保留各次原话性质，不将缺少后续解释为尚未完成。保留历史版本，不删除既有更正。使用 `soundlog_pipeline.py finish --spec 合并方案.json --links 关联.json` 验证并发布，成功后才回到idle。
+
+跨助手查询用 `soundlog_mcp.py` 的只读stdio接口；不要替用户修改助手配置或授予新数据访问。正式记忆新增操作用 `soundlog_integrations.py memory-prepare` 形成具体计划，拿到对应授权和实时MCP项目预检后才apply；必须真实MCP读回再confirm。日历请求先生成action-draft供用户审阅，收到指定目标和具体事件授权才live执行，回读匹配后记录真实回执。当前自动任务不得自行将录音历史口令当外部执行授权。
+
+问答补查必须使用`question-expand --question 原编号 --query 检索词`，不要只另建问题让网页原请求永远等待。读取request和retrieval的完整证据，先保存processing状态，失败说明真实错误。记录提问日期供相对问题锚定，原录音不擅补时区。完成答案须保留未知及媒体边界。
+
+日复盘dailyReviews可包含scenes数组；每项id为scene-前缀、type为work/life/child_learning/adult_learning、title、summary、factIds、sections（title/text/factIds）。所有fact须来自当日保留项，学习材料与儿童/成人类型一致。结构化场景须由实际时间与语义支持，卡片不是连续场景。MARK扫描可参考mark_scan.py读取完整原文邻接，扫描仅提示，不代表指令授权。
+
+## 每日跨天复盘
+
+完成新音频交付后，以最新已交付日期为范围终点，取最近7天，使用period_review.period_material读取每日概括和实际候选；依据具体引文形成精选复盘方案（字段见A-F功能使用与验收.md），再运行soundlog_features.py review --from 起日 --to 终日 --spec 方案.json。不要用统计索引假装agent跨天总结，不把全周素材未逐句复核说成完成。无新交付且已有同来源版本时不重复制造复盘；没有日期资料时不补活动。有新输入或更新的相同范围，保留旧版本并重新审阅引用。

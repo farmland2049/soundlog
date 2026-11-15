@@ -11,7 +11,7 @@ from .evidence import canonical, chunks, day_bounds, digest, read_json, timestam
 from .scenes import FUNCTION_PROMPT, digest_bytes, resolve_snapshot
 from .store import normalize, now, write_json
 
-VERSION = 'soundlog-products-v1.1-context'
+VERSION = 'soundlog-products-v1.2-empty-days'
 FUNCTIONS = {'journal': '每日记录', 'minutes': '讨论纪要', 'actions': '待办与安排候选', 'learning': '学习与灵感笔记'}
 ASSERTIONS = {'explicit', 'reported', 'suggestion', 'question', 'negated', 'uncertain', 'hypothetical'}
 ASSERTION_LABELS = {'explicit':'原话明确表达','reported':'转述/自述线索','suggestion':'建议或意向','question':'疑问','negated':'否定','uncertain':'含糊待核实','hypothetical':'假设举例'}
@@ -188,6 +188,9 @@ def export_request(scenes, root, *, days=None, selections=None, time_ranges=None
         else:
             selected = [e for e in evidence.values() if not parsed_ranges or any(
                 overlaps(timestamp(e['start']), timestamp(e['end']), a, b) for a, b in parsed_ranges)]
+            if not selected and not parsed_ranges:
+                items.append({'key':day+'-no-text','date':day,'material':{'date':day,
+                              'utterances':[],'acoustics':[],'noText':True,'focusFunctions':list(FUNCTIONS)}})
             for c in chunks({'date': day, 'utterances': selected, 'acoustics': []}, max_chars=max_chars):
                 items.append({'key': day + '-' + c['id'], 'date': day,
                               'material': {**c['material'], 'focusFunctions': list(FUNCTIONS)}})
@@ -196,6 +199,10 @@ def export_request(scenes, root, *, days=None, selections=None, time_ranges=None
         positions = {e['id']: n for n, e in enumerate(ordered)}
         for item in [i for i in items if i['date'] == day]:
             core = item['material']['utterances']
+            if not core:
+                item['material']['contextUtterances']=[]
+                item['material']['omittedContextIds']=[]
+                continue
             indices = [positions[e['id']] for e in core]
             before, after = min(indices), max(indices)
             nearby = ordered[max(0, before-context_count):before] + ordered[after+1:after+1+context_count]

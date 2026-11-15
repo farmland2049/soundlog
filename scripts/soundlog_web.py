@@ -7,7 +7,7 @@ import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, parse_qs
 
-from soundlog import selected, selected_snapshot, PRODUCTS, FUNCTIONS
+from soundlog import selected, selected_snapshot, evidence_context, PRODUCTS, FUNCTIONS
 from soundlog_memory.unified_search import search_soundlog
 from soundlog_memory.scenes import digest_bytes
 
@@ -80,22 +80,7 @@ def handler(token):
                     result = {'topics': topics}
                 elif url.path == prefix + '/api/context':
                     day = params.get('day', [''])[0]; evidence_id = params.get('id', [''])[0]
-                    if day not in row['dates'] or not re.fullmatch(r'ev-[a-f0-9]{24}', evidence_id):
-                        raise ValueError('日期或原文编号无效')
-                    snapshot = selected_snapshot(receipt)
-                    snapshot_receipt = json.loads((snapshot / 'receipt.json').read_text(encoding='utf-8'))
-                    name = day + '_utterances.json'; source_path = snapshot / name
-                    if digest_bytes(source_path) != snapshot_receipt.get('artifacts', {}).get(name):
-                        raise ValueError('原文来源校验失败')
-                    utterances = json.loads(source_path.read_text(encoding='utf-8'))['utterances']
-                    matching = [i for i, u in enumerate(utterances) if u['id'] == evidence_id]
-                    if len(matching) != 1:
-                        raise ValueError('原文编号不属于该日期')
-                    center = matching[0]; current = utterances[center]
-                    same = [u for u in utterances[max(0, center-3):center+4]
-                            if u['sourceSHA256'] == current['sourceSHA256']]
-                    result = {'focusId': evidence_id, 'rows': same,
-                              'boundary': '仅显示同一音频的相邻机器转写，不代表说话人身份或事件关联。'}
+                    result = evidence_context(selected_snapshot(receipt), day, evidence_id, row['dates'])
                 elif url.path == prefix + '/api/search':
                     day = params.get('day', [''])[0]; query = params.get('q', [''])[0]
                     if (day and day not in row['dates']) or not query.strip() or len(query) > 200:

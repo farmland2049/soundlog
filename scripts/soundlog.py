@@ -2,6 +2,7 @@
 """Local entry point for the selected recording results."""
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -42,6 +43,27 @@ def selected_snapshot(receipt):
     return snapshot
 
 
+def evidence_context(snapshot, day, evidence_id, dates):
+    """Return nearby transcript rows from the same recording after hash verification."""
+    if day not in dates or not re.fullmatch(r'ev-[a-f0-9]{24}', evidence_id):
+        raise ValueError('日期或原文编号无效')
+    snapshot_receipt = json.loads((snapshot / 'receipt.json').read_text(encoding='utf-8'))
+    name = day + '_utterances.json'
+    source_path = snapshot / name
+    if digest_bytes(source_path) != snapshot_receipt.get('artifacts', {}).get(name):
+        raise ValueError('原文来源校验失败')
+    utterances = json.loads(source_path.read_text(encoding='utf-8'))['utterances']
+    matching = [i for i, row in enumerate(utterances) if row['id'] == evidence_id]
+    if len(matching) != 1:
+        raise ValueError('原文编号不属于该日期')
+    center = matching[0]
+    current = utterances[center]
+    rows = [row for row in utterances[max(0, center-3):center+4]
+            if row['sourceSHA256'] == current['sourceSHA256']]
+    return {'focusId': evidence_id, 'rows': rows,
+            'boundary': '仅显示同一音频的相邻机器转写，不代表说话人身份或事件关联。'}
+
+
 def main():
     p = argparse.ArgumentParser(description='查看本机录音处理与已选择的功能结果')
     sub = p.add_subparsers(dest='command', required=True)
@@ -50,6 +72,8 @@ def main():
     view.add_argument('date'); view.add_argument('function', choices=FUNCTIONS)
     search = sub.add_parser('search', help='并列检索原文和功能候选')
     search.add_argument('query'); search.add_argument('--date'); search.add_argument('--function', choices=FUNCTIONS)
+    context = sub.add_parser('context', help='按证据编号定位原文与同一录音的相邻转写')
+    context.add_argument('date'); context.add_argument('evidence_id')
     sub.add_parser('inbox', help='检查待处理音频，不执行处理')
     sub.add_parser('process', help='处理待处理录音；成功后原文件会移入已归档目录')
     args = p.parse_args()
@@ -73,6 +97,9 @@ def main():
                     not path.is_file() or digest_bytes(path) != reading_receipt.get('artifacts', {}).get(path.name)):
                 raise ValueError('阅读版与当前结果不一致或文件已改变')
             print(path)
+        elif args.command == 'context':
+            result = evidence_context(selected_snapshot(receipt), args.date, args.evidence_id, row['dates'])
+            print(json.dumps(result, ensure_ascii=False, indent=2))
         else:
             cmd = [sys.executable, str(ROOT / 'scripts/search_soundlog.py'), args.query, '--result', row['resultId'], '--scenes', str(selected_snapshot(receipt))]
             if args.date: cmd += ['--date', args.date]
