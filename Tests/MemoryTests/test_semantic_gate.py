@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 import tempfile
@@ -7,6 +8,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
 from soundlog_memory.scenes import digest_bytes
 from soundlog_memory.store import write_json
+from soundlog_memory.evidence import digest
 from soundlog_memory.semantic_gate import FUNCTIONS, freeze_gold, prepare_pack, score_run, sha256
 
 
@@ -73,7 +75,7 @@ class SemanticGateTests(unittest.TestCase):
                             'evidence': [{'id': row['id'], 'quote': row['text']}],
                             'support': 'supported', 'violations': []}],
             })
-        return {'frozenSHA256': sha256(frozen_path), 'generatedAt': '2026-11-14T12:00:00Z',
+        return {'frozenSHA256': sha256(frozen_path), 'generatedAt': (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat(),
                 'promptSHA256': 'a' * 64, 'runId': 'run-1', 'reviewer': 'reviewer-1', 'cases': cases}
 
     def test_prepares_only_unprocessed_case_material(self):
@@ -83,25 +85,51 @@ class SemanticGateTests(unittest.TestCase):
         self.assertEqual((result['cases'], result['holdout']), (24, 8))
         self.assertEqual(json.loads(output.read_text())['generationStartedAt'], None)
 
-    def test_existing_processed_evidence_cannot_become_holdout(self):
+    def existing_result(self, evidence_id='ev-00', start=0, end=10, snapshot_id=None):
         product_id = 'product-' + 'c' * 24
         folder = self.results_root / 'results' / product_id
         folder.mkdir(parents=True)
-        facts = {'facts': [{'evidence': [{'id': 'ev-00'}]}]}
-        coverage = {'processed': [{'evidence': [{'id': 'ev-00', 'disposition': 'used', 'reason': 'test'}]}],
+        source = {'id': evidence_id, 'sourceSHA256': '0' * 64,
+                  'startOffsetSeconds': start, 'endOffsetSeconds': end}
+        request = {'items': [{'key': 'prior', 'material': {'utterances': [source]}}]}
+        request_id = 'prodreq-' + digest(request)[:24]
+        write_json(self.results_root / 'requests' / request_id / 'request.json',
+                   {**request, 'requestId': request_id})
+        facts = {'facts': []}
+        coverage = {'processed': [{'key': 'prior', 'evidence': [{'id': evidence_id, 'disposition': 'context', 'reason': 'test'}]}],
                     'missingChunks': []}
         write_json(folder / 'facts.json', facts)
         write_json(folder / 'coverage.json', coverage)
         write_json(folder / 'receipt.json', {
-            'resultId': product_id, 'sourceSnapshotId': self.snapshot_id,
+            'resultId': product_id, 'requestId': request_id, 'sourceSnapshotId': snapshot_id or self.snapshot_id,
             'state': 'completed', 'artifacts': {
                 'facts.json': digest_bytes(folder / 'facts.json'),
                 'coverage.json': digest_bytes(folder / 'coverage.json'),
             },
         })
+    def test_existing_processed_evidence_cannot_become_holdout(self):
+        self.existing_result()
         with self.assertRaisesRegex(ValueError, '已有产品结果处理过'):
             prepare_pack(scenes_root=self.snapshot, results_root=self.results_root,
                          selection_file=self.selection, output_file=self.root / 'rejected.json')
+
+    def test_processed_evidence_in_older_snapshot_cannot_become_holdout(self):
+        self.existing_result(snapshot_id='a' * 64)
+        with self.assertRaisesRegex(ValueError, '已有产品结果处理过'):
+            prepare_pack(scenes_root=self.snapshot, results_root=self.results_root,
+                         selection_file=self.selection, output_file=self.root / 'rejected-old-snapshot.json')
+
+    def test_retranscribed_same_audio_overlap_is_rejected(self):
+        self.existing_result(evidence_id='ev-old-transcript', start=1, end=9, snapshot_id='a' * 64)
+        with self.assertRaisesRegex(ValueError, '源音频时间范围重叠'):
+            prepare_pack(scenes_root=self.snapshot, results_root=self.results_root,
+                         selection_file=self.selection, output_file=self.root / 'rejected-overlap.json')
+
+    def test_non_overlapping_time_in_same_audio_remains_eligible(self):
+        self.existing_result(evidence_id='ev-old-transcript', start=11, end=20, snapshot_id='a' * 64)
+        result = prepare_pack(scenes_root=self.snapshot, results_root=self.results_root,
+                              selection_file=self.selection, output_file=self.root / 'accepted.json')
+        self.assertEqual(result['cases'], 24)
 
     def test_freeze_and_holdout_metrics_pass_only_from_manual_labels(self):
         frozen_path, frozen, freeze_result = self.frozen()
@@ -125,6 +153,29 @@ class SemanticGateTests(unittest.TestCase):
         self.assertFalse(result['passed'])
         self.assertEqual(result['holdout']['criticalViolationCount'], 1)
 
+    def test_no_output_holdout_rejects_false_positive(self):
+        draft_path = self.prepared_draft()
+        draft = json.loads(draft_path.read_text())
+        case = next(c for c in draft['cases'] if c['holdout'])
+        case['gold'] = {'requiredPoints': [], 'expectedNoOutput': True,
+                        'allowedUnknowns': [], 'forbiddenInferences': ['不能生成无依据的本类事项']}
+        write_json(draft_path, draft)
+        frozen_path = self.root / 'no-output-frozen.json'
+        freeze_gold(draft_path, frozen_path)
+        frozen = json.loads(frozen_path.read_text())
+        review = self.review_for(frozen_path, frozen)
+        row = next(r for r in review['cases'] if r['caseId'] == case['caseId'])
+        claim = row['claims'][0]
+        row['pointCoverage'] = []; row['claims'] = []
+        review_path = self.root / 'no-output-review.json'; write_json(review_path, review)
+        passed = score_run(frozen_path, review_path, self.root / 'no-output-passed.json')
+        self.assertTrue(passed['passed'])
+        self.assertEqual(passed['holdout']['noOutputCorrect'], 1)
+        row['claims'] = [claim]; write_json(review_path, review)
+        failed = score_run(frozen_path, review_path, self.root / 'no-output-failed.json')
+        self.assertFalse(failed['passed'])
+        self.assertEqual(failed['holdout']['noOutputFalsePositives'], 1)
+
     def test_generation_must_follow_freeze_and_use_exact_hash(self):
         frozen_path, frozen, _ = self.frozen()
         review = self.review_for(frozen_path, frozen)
@@ -133,6 +184,49 @@ class SemanticGateTests(unittest.TestCase):
         write_json(review_path, review)
         with self.assertRaisesRegex(ValueError, '晚于'):
             score_run(frozen_path, review_path, self.root / 'score.json')
+
+    def test_bound_score_requires_exact_generated_claims(self):
+        from semantic_blind_packet import build_packet
+        frozen_path, frozen, _ = self.frozen()
+        packet_path = self.root / 'packet.json'
+        build_packet(frozen_path, packet_path)
+        prompt_path = self.root / 'prompt.txt'
+        prompt_path.write_text('actual prompt')
+        review = self.review_for(frozen_path, frozen)
+        review['promptSHA256'] = sha256(prompt_path)
+        generated = {'runId': review['runId'], 'generatedAt': review['generatedAt'],
+                     'promptSHA256': review['promptSHA256'], 'packetSHA256': sha256(packet_path),
+                     'cases': [{'caseId': r['caseId'],
+                                'claims': [{k: c[k] for k in ('claimId', 'text', 'evidence')}
+                                           for c in r['claims']]} for r in review['cases']]}
+        generation_path = self.root / 'generation.json'; write_json(generation_path, generated)
+        review['generationSHA256'] = sha256(generation_path)
+        review_path = self.root / 'bound-review.json'; write_json(review_path, review)
+        result = score_run(frozen_path, review_path, self.root / 'bound-score.json',
+                           generation_file=generation_path, packet_file=packet_path, prompt_file=prompt_path)
+        self.assertTrue(result['passed'])
+        self.assertEqual(json.loads((self.root / 'bound-score.json').read_text())['generationBinding']['generationSHA256'], sha256(generation_path))
+        review['cases'][0]['claims'] = []
+        review['cases'][0]['pointCoverage'][0].update(covered=False, claimIds=[])
+        write_json(review_path, review)
+        with self.assertRaisesRegex(ValueError, '逐条匹配'):
+            score_run(frozen_path, review_path, self.root / 'tampered-score.json',
+                      generation_file=generation_path, packet_file=packet_path, prompt_file=prompt_path)
+
+    def test_unverifiable_generated_evidence_is_counted_as_failure(self):
+        frozen_path, frozen, _ = self.frozen()
+        review = self.review_for(frozen_path, frozen)
+        holdout_ids = {c['caseId'] for c in frozen['cases'] if c['holdout']}
+        claim = next(r for r in review['cases'] if r['caseId'] in holdout_ids)['claims'][0]
+        claim['evidence'][0]['quote'] = 'invented quote'
+        review_path = self.root / 'review-invalid.json'; write_json(review_path, review)
+        with self.assertRaisesRegex(ValueError, '无效引文'):
+            score_run(frozen_path, review_path, self.root / 'invalid.json')
+        claim['support'] = 'unsupported'; claim['violations'] = ['fabricated_quote']
+        write_json(review_path, review)
+        result = score_run(frozen_path, review_path, self.root / 'counted.json')
+        self.assertFalse(result['passed'])
+        self.assertEqual(result['holdout']['criticalViolationCount'], 1)
 
 
 if __name__ == '__main__':

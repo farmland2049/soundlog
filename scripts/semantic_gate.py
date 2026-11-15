@@ -34,6 +34,9 @@ def main(argv=None):
     score.add_argument('--frozen', type=Path, required=True)
     score.add_argument('--review', type=Path, required=True)
     score.add_argument('--output', type=Path, required=True)
+    score.add_argument('--generation', type=Path)
+    score.add_argument('--packet', type=Path)
+    score.add_argument('--prompt', type=Path)
     args = parser.parse_args(argv)
     try:
         if args.command == 'prepare':
@@ -42,7 +45,8 @@ def main(argv=None):
         elif args.command == 'freeze-gold':
             result = freeze_gold(args.draft, private_output(args.output))
         else:
-            result = score_run(args.frozen, args.review, private_output(args.output))
+            result = score_run(args.frozen, args.review, private_output(args.output),
+                               generation_file=args.generation, packet_file=args.packet, prompt_file=args.prompt)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result.get('passed', True) else 1
     except (OSError, ValueError, KeyError, TypeError) as exc:

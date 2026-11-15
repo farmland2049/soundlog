@@ -61,6 +61,22 @@
 
 ---
 
+## 本地阅读页面
+
+运行 `python3 scripts/soundlog_web.py`，在浏览器中打开终端显示的本机地址；按 Ctrl+C 停止。页面可按日期和栏目浏览候选、按主题查看、展开原文并查看同一音频的相邻转写，也可按关键词检索单日或当前选择的全部日期。它只监听本机回环地址，使用一次性访问路径，不提供上传或写入操作；待办性质和期限均为历史录音信息，不代表当前状态。
+
+## 本地结果入口
+
+```bash
+python3 scripts/soundlog.py status
+python3 scripts/soundlog.py inbox
+python3 scripts/soundlog.py process
+python3 scripts/soundlog.py view 2026-11-10 journal
+python3 scripts/soundlog.py search 关键词 --date 2026-11-10
+```
+
+`process` 运行现有录音流水线，成功处理的源文件会移动到已归档目录；`inbox` 只检查。`view` 输出已校验的阅读版路径，`search` 并列返回原文与候选；关键词检索不是自然语言问答。入口读取本机当前选择清单，未选择完整结果时会报错。
+
 ## 快速使用
 
 ### 1. 日常随身录音一键处理流水线（推荐）
