@@ -1,5 +1,7 @@
 # Soundlog 自动处理约定
 
+个人视角优先：本人声音确认在`记忆库/运行/本人声音/`，使用`voice_calibration.confirmed_roles/annotate_evidence`按证据ID、原音哈希和精确偏移读取；MCP检索及网页问答材料带voiceAttribution。self/other仅是该片段的用户确认，不扩散到同号说话人或整段摘要。模型possible_self仍是候选，不能代替用户确认。“我的表达”“别人对我说的”“我听到的媒体”须结合语义角色分别判断，不把确认声音机械等同本人经历、承诺或当前完成状态。原始转写和正式记忆不自动改写。
+
 适用入口：在项目根运行 `python3 scripts/soundlog_pipeline.py tick`。
 脚本不调用语义模型；定时唤醒的当前 Codex agent 负责真正阅读材料与语义筛选。
 用户已授权发现新音频后执行本机转写与全套内容交付，不需要重复逐批确认。

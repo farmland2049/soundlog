@@ -26,11 +26,15 @@ def call(root,name,args):
  root=Path(root);delivery=root/'产出/自动交付';home=root/'记忆库/运行/自动管线';scenes=root/'产出/大模型分析素材/每日场景-v2'
  identity_path=root/'记忆库/运行/产品功能/identity-scopes.json'
  bindings=json.loads(identity_path.read_text())['bindings'] if identity_path.exists() else {}
- def attributed(f):return {**f,'attribution':bindings.get(f['id'],{'alias':None,'scope':'unknown'})}
+ from soundlog_memory.voice_calibration import confirmed_roles,annotate_evidence
+ roles=confirmed_roles(root)
+ def attributed(f):return {**f,'attribution':bindings.get(f['id'],{'alias':None,'scope':'unknown'}),'evidence':[annotate_evidence(e,roles) for e in f['evidence']]}
  if name=='soundlog_status':return {'catalog':json.loads((delivery/'catalog.json').read_text()),'pipeline':json.loads((home/'state.json').read_text()) if (home/'state.json').exists() else {'state':'uninitialized'}}
  if name=='soundlog_search':
   query=args['query'];terms=query.casefold().split();facts=[f for f in library(delivery) if (not args.get('date') or f['date']==args['date']) and all(term in (f['summary']+' '+' '.join(e['quote'] for e in f['evidence'])).casefold() for term in terms)]
-  return {'facts':[attributed(f) for f in facts[:100]],'totalFacts':len(facts),'raw':search_evidence(scenes,query,day=args.get('date'),limit=100),'boundary':'关键词检索可能漏同义表达；事实/身份仍以原文与确认范围为准。'}
+  raw=search_evidence(scenes,query,day=args.get('date'),limit=100)
+  raw['matches']=[annotate_evidence(e,roles) for e in raw['matches']]
+  return {'facts':[attributed(f) for f in facts[:100]],'totalFacts':len(facts),'raw':raw,'boundary':'关键词检索可能漏同义表达；事实/身份仍以原文与确认范围为准。'}
  if name=='soundlog_day':return {'date':args['date'],'facts':[attributed(f) for f in library(delivery) if f['date']==args['date']]}
  if name=='soundlog_task':
   tasks=json.loads((delivery/'task-graph.json').read_text())['tasks'];match=next((t for t in tasks if t['id']==args['id']),None)
@@ -50,7 +54,7 @@ def call(root,name,args):
     p=snapshot/name
     if digest_bytes(p)!=sha:raise ValueError('证据文件已改变')
     for e in json.loads(p.read_text())['utterances']:
-     if e['id']==args['id']:return e
+     if e['id']==args['id']:return annotate_evidence(e,roles)
   raise ValueError('证据不存在')
 
 

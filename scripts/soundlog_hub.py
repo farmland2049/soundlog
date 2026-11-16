@@ -5,6 +5,9 @@ import json
 import mimetypes
 import re
 import secrets
+import threading
+from soundlog_memory import workbench_view
+from soundlog_memory.store import write_json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit, unquote
@@ -12,13 +15,8 @@ from soundlog_memory.pipeline import Pipeline
 from soundlog_memory.library_tools import library, ask
 from soundlog_memory.scenes import digest_bytes
 
-PAGE='''<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Soundlog 工作台</title><style>body{font:17px/1.65 system-ui;max-width:1080px;margin:24px auto;padding:20px;background:#f5f5f1}section,article{padding:20px;margin:16px 0;background:white;border-radius:12px}input,button{font:inherit;padding:10px}input{width:72%}button{cursor:pointer}pre{white-space:pre-wrap}a{color:#285d48}.muted{color:#666}</style><h1>Soundlog 工作台</h1><p>录音资料、历史事项和证据问答</p><section><h2>证据问答</h2><input id="question" aria-label="问题" placeholder="例如：我答应发送哪些资料？"><button id="ask">提交问题</button><p class="muted">由agent读取原文后回答，按定时任务处理；等待状态会保留。检索提示词可在下方填写。</p><input id="queries" aria-label="检索提示词" placeholder="可选：仿真,资料（多个词以逗号分隔）"></section><section><h2>问题与回答</h2><div id="questions"></div></section><section><h2>资料入口</h2><div id="links"></div></section><section><h2>事项变化</h2><div id="tasks"></div></section><p id="error"></p><script>
-const base=location.pathname.replace(/\/$/,''),el=(tag,text)=>{let x=document.createElement(tag);x.textContent=text;return x};
-async function api(path,options){let r=await fetch(base+'/api/'+path,options);let d=await r.json();if(!r.ok)throw Error(d.error||r.status);return d}
-function link(text,path){let a=el('a',text);a.href=base+'/files/'+path;return a}
-async function load(){try{let d=await api('overview'),l=document.querySelector('#links');l.replaceChildren();for(let row of d.links)l.append(link(row.title,row.path),el('br',''));let tasks=document.querySelector('#tasks');tasks.replaceChildren();for(let t of d.tasks){let a=el('article','');a.append(el('h3',t.stateLabel),el('p',t.timeline.map(x=>x.date+' '+x.summary).join('\\n')));tasks.append(a)}let q=await api('questions'),out=document.querySelector('#questions');out.replaceChildren();for(let x of q){let a=el('article','');a.append(el('h3',x.question),el('p',({'awaiting_agent':'等待agent处理','processing':'正在处理','answered':'已完成','failed':'处理失败'})[x.state]||x.state));if(x.error)a.append(el('p',x.error));if(x.answer){for(let c of x.answer.claims){a.append(el('p',c.text));for(let e of c.evidence){let s=x.sources[e.id]||{};a.append(el('p',(s.start||'')+' '+(s.sourceFile||'')+' '+(s.startOffsetSeconds??'')+'秒'),el('pre',e.quote))}}a.append(el('p','尚不明确：'+x.answer.unknown))}out.append(a)}}catch(e){document.querySelector('#error').textContent=e.message}}
-document.querySelector('#ask').onclick=async()=>{try{let question=document.querySelector('#question').value.trim(),queries=document.querySelector('#queries').value.split(/[,，]/).map(x=>x.trim()).filter(Boolean);await api('questions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question,queries})});await load()}catch(e){document.querySelector('#error').textContent=e.message}};load();setInterval(load,10000);
-</script>'''
+UI_ROOT = Path(__file__).resolve().parent.parent/'界面/workbench'
+
 
 
 def markdown_html(text):
@@ -46,6 +44,7 @@ def markdown_html(text):
 
 def handler(root,token):
  root=Path(root).resolve(); pipeline=Pipeline(root);prefix='/'+token
+ run_lock=threading.Lock()
  class Handler(BaseHTTPRequestHandler):
   def log_message(self,*args):pass
   def allowed(self):
@@ -58,13 +57,51 @@ def handler(root,token):
    body=data if isinstance(data,bytes) else json.dumps(data,ensure_ascii=False).encode()
    self.send_response(code);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(body)))
    self.send_header('Cache-Control','no-store');self.send_header('Referrer-Policy','no-referrer');self.send_header('X-Content-Type-Options','nosniff')
-   self.send_header('Content-Security-Policy',"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'")
+   self.send_header('Content-Security-Policy',"default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; media-src 'self'; frame-src 'self'; base-uri 'none'; frame-ancestors 'self'")
    self.end_headers();self.wfile.write(body)
   def do_GET(self):
    if not self.allowed():self.send_error(404);return
    url=urlsplit(self.path);path=url.path
    try:
-    if path in {prefix,prefix+'/'}:self.reply(200,PAGE.encode(),'text/html; charset=utf-8');return
+    if path==prefix:
+     self.send_response(302);self.send_header('Location',prefix+'/');self.end_headers();return
+    if path==prefix+'/':self.reply(200,(UI_ROOT/'index.html').read_bytes(),'text/html; charset=utf-8');return
+    if path.startswith(prefix+'/assets/'):
+     name=path[len(prefix+'/assets/'):]
+     if name not in {'app.css','app.js'}:raise ValueError('界面资源不存在')
+     self.reply(200,(UI_ROOT/name).read_bytes(),'text/css; charset=utf-8' if name.endswith('.css') else 'text/javascript; charset=utf-8');return
+    if path.startswith(prefix+'/audio/'):
+     self.send_audio(path[len(prefix+'/audio/'):]);return
+    if path==prefix+'/api/audio':
+     from soundlog_memory.audio_access import open_verified,interval
+     identifier=parse_qs(url.query).get('id',[''])[0]
+     handle,row,size=open_verified(root,identifier)
+     handle.close();self.reply(200,{**interval(row),'id':identifier,'bytes':size,'url':prefix+'/audio/'+identifier});return
+    if path==prefix+'/api/voice':
+     from soundlog_memory.voice_calibration import state
+     self.reply(200,state(root));return
+    if path==prefix+'/api/me':
+     from soundlog_memory.voice_calibration import my_view
+     self.reply(200,my_view(root));return
+    if path==prefix+'/api/health':
+     import hashlib
+     self.reply(200,{'application':'soundlog-workbench','version':2,'rootKey':hashlib.sha256(str(root).encode()).hexdigest()[:24]});return
+    if path==prefix+'/api/workbench':self.reply(200,workbench_view.overview(pipeline));return
+    if path==prefix+'/api/day':self.reply(200,workbench_view.day_view(pipeline,parse_qs(url.query).get('date',[''])[0]));return
+    if path==prefix+'/api/tasks':
+     p=pipeline.delivery/'task-graph.json';self.reply(200,json.loads(p.read_text()) if p.exists() else {'tasks':[],'links':[]});return
+    if path==prefix+'/api/knowledge':
+     result=workbench_view.derived(pipeline.delivery)
+     ids={fid for item in result.get('intents',[])+result.get('topics',[]) for fid in item.get('factIds',[])}
+     result['referencedFacts']=[f for f in library(pipeline.delivery) if f['id'] in ids] if ids else []
+     self.reply(200,result);return
+    if path==prefix+'/api/connections':self.reply(200,workbench_view.connections(pipeline));return
+    if path==prefix+'/api/reviews':self.reply(200,workbench_view.reviews(pipeline.delivery));return
+    if path==prefix+'/api/search':
+     query=parse_qs(url.query).get('q',[''])[0].strip()
+     if not query or len(query)>200:raise ValueError('请输入1至200字的检索词')
+     from soundlog_mcp import call
+     self.reply(200,call(root,'soundlog_search',{'query':query}));return
     if path==prefix+'/api/questions':
      rows=[]
      for folder in sorted((pipeline.home/'questions').glob('question-*')):
@@ -76,8 +113,8 @@ def handler(root,token):
        extra=json.loads(retrieval.read_text());request={**request,'facts':request['facts']+extra['facts'],'rawEvidence':request.get('rawEvidence',[])+extra['rawEvidence']}
       sources={e['id']:e for f in request['facts'] for e in f['evidence']}
       for part in request.get('rawEvidence',[]):sources.update({e['id']:e for e in part['matches']})
-      rows.append({'sources':sources,'id':folder.name,'question':request['question'],'state':'answered' if answer else status['state'],'error':status.get('error'),'answer':answer})
-     self.reply(200,rows);return
+      rows.append({'createdAt':(folder/'request.json').stat().st_mtime,'sources':sources,'id':folder.name,'question':request['question'],'state':'answered' if answer else status['state'],'error':status.get('error'),'answer':answer})
+     self.reply(200,sorted(rows,key=lambda r:r['createdAt'],reverse=True));return
     if path==prefix+'/api/overview':
      catalog=json.loads((pipeline.delivery/'catalog.json').read_text());links=[{'title':'全部日期检索','path':'index.html'},{'title':'事项跟踪','path':'task-tracking.md'}]
      for day,bundle in sorted(catalog['days'].items()):links.append({'title':day+' 每日首页','path':bundle+'/'+day+'/README.md'})
@@ -105,8 +142,54 @@ def handler(root,token):
      return
     self.send_error(404)
    except (OSError,ValueError,KeyError,TypeError) as e:self.reply(400,{'error':str(e)})
+  def do_HEAD(self):
+   if not self.allowed():self.send_error(404);return
+   path=urlsplit(self.path).path
+   if not path.startswith(prefix+'/audio/'):self.send_error(404);return
+   try:self.send_audio(path[len(prefix+'/audio/'):],head=True)
+   except (OSError,ValueError,KeyError) as error:self.reply(400,{'error':str(error)})
+  def send_audio(self,identifier,head=False):
+   from soundlog_memory.audio_access import open_verified,byte_range
+   handle,row,size=open_verified(root,identifier)
+   with handle:
+    try:start,end,status=byte_range(self.headers.get('Range'),size)
+    except ValueError:
+     self.send_response(416);self.send_header('Content-Range','bytes */'+str(size));self.send_header('Content-Length','0');self.end_headers();return
+    self.send_response(status);self.send_header('Content-Type',mimetypes.guess_type(row['sourceFile'])[0] or 'application/octet-stream')
+    self.send_header('Accept-Ranges','bytes');self.send_header('Content-Length',str(end-start+1))
+    self.send_header('Cache-Control','no-store');self.send_header('Referrer-Policy','no-referrer');self.send_header('X-Content-Type-Options','nosniff')
+    if status==206:self.send_header('Content-Range',f'bytes {start}-{end}/{size}')
+    self.end_headers()
+    if head:return
+    handle.seek(start);remaining=end-start+1
+    try:
+     while remaining:
+      chunk=handle.read(min(65536,remaining))
+      if not chunk:break
+      self.wfile.write(chunk);remaining-=len(chunk)
+    except (BrokenPipeError,ConnectionResetError):pass
   def do_POST(self):
-   if not self.allowed() or urlsplit(self.path).path!=prefix+'/api/questions':self.send_error(404);return
+   if not self.allowed():self.send_error(404);return
+   if urlsplit(self.path).path==prefix+'/api/voice/label':
+    try:
+     length=int(self.headers.get('Content-Length','0'))
+     if not 0<length<=2048:raise ValueError('请求长度无效')
+     from soundlog_memory.voice_calibration import label
+     request=json.loads(self.rfile.read(length))
+     with pipeline.lock():result=label(root,request)
+     self.reply(200,result)
+    except (OSError,ValueError,KeyError,TypeError) as error:self.reply(400,{'error':str(error)})
+    return
+   if urlsplit(self.path).path==prefix+'/api/run':
+    if not run_lock.acquire(blocking=False):self.reply(202,{'state':'already_running'});return
+    write_json(pipeline.home/'manual-run.json',{'state':'running'})
+    def run():
+     try:
+      result=pipeline.tick();write_json(pipeline.home/'manual-run.json',{'state':'completed','resultState':result['state']})
+     except Exception as error:write_json(pipeline.home/'manual-run.json',{'state':'failed','error':str(error)})
+     finally:run_lock.release()
+    threading.Thread(target=run,daemon=True).start();self.reply(202,{'state':'started'});return
+   if urlsplit(self.path).path!=prefix+'/api/questions':self.send_error(404);return
    try:
     length=int(self.headers.get('Content-Length','0'))
     if not 0<length<=16384:raise ValueError('请求长度无效')
@@ -115,7 +198,7 @@ def handler(root,token):
     # Agent expands these terms before answering; the phrase alone is not treated as exhaustive retrieval.
     if not queries:queries=[question.strip()[:100]]
     snapshot=pipeline.scenes if (pipeline.scenes/'latest.json').exists() else None
-    with pipeline.lock():result=ask(pipeline.delivery,pipeline.home,question,queries,snapshot)
+    with pipeline.lock():result=ask(pipeline.delivery,pipeline.home,question,queries,snapshot,project_root=root)
     self.reply(201,result)
    except (OSError,ValueError,KeyError,TypeError) as e:self.reply(400,{'error':str(e)})
  return Handler

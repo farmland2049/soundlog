@@ -45,7 +45,7 @@ def task_ledger(root):
     return {'mentions':len(rows),'crossDayLinks':0,'state':'mentions_only'}
 
 
-def ask(root, home, question, queries, raw_snapshot=None, question_timezone="Asia/Shanghai"):
+def ask(root, home, question, queries, raw_snapshot=None, question_timezone="Asia/Shanghai",project_root=None):
     """Prepare lexical evidence for the current agent, never invent a reply."""
     if not isinstance(question,str) or not question.strip() or not queries or any(not isinstance(q,str) or not q.strip() for q in queries):
         raise ValueError('须提供问题与至少一个检索词')
@@ -55,6 +55,11 @@ def ask(root, home, question, queries, raw_snapshot=None, question_timezone="Asi
     if raw_snapshot is not None:
         from .scenes import search_evidence
         raw = [search_evidence(raw_snapshot, q, limit=1000) for q in queries]
+    if project_root is not None:
+        from .voice_calibration import confirmed_roles,annotate_evidence
+        roles=confirmed_roles(project_root)
+        hits=[{**f,'evidence':[annotate_evidence(e,roles) for e in f['evidence']]} for f in hits]
+        raw=[{**r,'matches':[annotate_evidence(e,roles) for e in r['matches']]} for r in raw]
     question_date=datetime.now(ZoneInfo(question_timezone)).date().isoformat()
     identity=hashlib.sha256(json.dumps({'question':question,'questionDate':question_date,'timezone':question_timezone,'queries':queries,'facts':hits,'raw':raw},sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:24]
     folder=Path(home)/'questions'/('question-'+identity);folder.mkdir(parents=True,exist_ok=True)
@@ -117,7 +122,7 @@ def question_state(home,question_id,state,detail=''):
     write_json(folder/'status.json',status);return status
 
 
-def expand_question(root,home,question_id,queries,raw_snapshot=None):
+def expand_question(root,home,question_id,queries,raw_snapshot=None,project_root=None):
     import re
     if not re.fullmatch(r'question-[a-f0-9]{24}',question_id):raise ValueError('问题编号无效')
     folder=Path(home)/'questions'/question_id
@@ -128,6 +133,11 @@ def expand_question(root,home,question_id,queries,raw_snapshot=None):
     facts=[f for f in library(root) if any(all(part in (f['summary']+' '+' '.join(e['quote'] for e in f['evidence'])).casefold() for part in q.casefold().split()) for q in terms)]
     from .scenes import search_evidence
     raw=[search_evidence(raw_snapshot,q,limit=1000) for q in terms] if raw_snapshot is not None else []
+    if project_root is not None:
+        from .voice_calibration import confirmed_roles,annotate_evidence
+        roles=confirmed_roles(project_root)
+        facts=[{**f,'evidence':[annotate_evidence(e,roles) for e in f['evidence']]} for f in facts]
+        raw=[{**r,'matches':[annotate_evidence(e,roles) for e in r['matches']]} for r in raw]
     revision={'questionId':question_id,'originalSHA256':hashlib.sha256(json.dumps(original,sort_keys=True,ensure_ascii=False).encode()).hexdigest(),'queries':terms,'facts':facts,'rawEvidence':raw,'scope':'expanded_retained_and_raw' if raw else 'expanded_retained_only'}
     sha=hashlib.sha256(json.dumps(revision,sort_keys=True,ensure_ascii=False).encode()).hexdigest();revision['sha256']=sha
     versions=folder/'retrieval-revisions';versions.mkdir(exist_ok=True)

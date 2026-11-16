@@ -14,8 +14,8 @@ def main():
  a=p.parse_args();root=a.root;delivery=root/'产出/自动交付';home=root/'记忆库/运行/自动管线'
  try:
   if a.command=='tasks':result=task_ledger(delivery)
-  elif a.command=='ask':result=ask(delivery,home,a.question,a.query,root/'产出/大模型分析素材/每日场景-v2' if (root/'产出/大模型分析素材/每日场景-v2/latest.json').exists() else None)
-  elif a.command=='question-expand':result=expand_question(delivery,home,a.question,a.query,root/'产出/大模型分析素材/每日场景-v2' if (root/'产出/大模型分析素材/每日场景-v2/latest.json').exists() else None)
+  elif a.command=='ask':result=ask(delivery,home,a.question,a.query,root/'产出/大模型分析素材/每日场景-v2' if (root/'产出/大模型分析素材/每日场景-v2/latest.json').exists() else None,project_root=root)
+  elif a.command=='question-expand':result=expand_question(delivery,home,a.question,a.query,root/'产出/大模型分析素材/每日场景-v2' if (root/'产出/大模型分析素材/每日场景-v2/latest.json').exists() else None,project_root=root)
   elif a.command=='question-state':result=question_state(home,a.question,a.state,a.detail)
   else:result=answer(home,a.question,json.loads(a.file.read_text()))
   print(json.dumps(result,ensure_ascii=False,indent=2));return 0
