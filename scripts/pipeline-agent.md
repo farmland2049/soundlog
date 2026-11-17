@@ -1,21 +1,23 @@
-# Soundlog 自动处理约定
+# Soundlog 手动开始后的完整处理约定
+
+产品也提供`skills/soundlog/SKILL.md`作为可安装的`soundlog` skill使用形式。Skill负责定位项目与任务路由，完整阶段规范仍以本文和实际代码为准；不维护第二套流程。非skill使用形式留待后续讨论。
 
 个人视角优先：本人声音确认在`记忆库/运行/本人声音/`，使用`voice_calibration.confirmed_roles/annotate_evidence`按证据ID、原音哈希和精确偏移读取；MCP检索及网页问答材料带voiceAttribution。self/other仅是该片段的用户确认，不扩散到同号说话人或整段摘要。模型possible_self仍是候选，不能代替用户确认。“我的表达”“别人对我说的”“我听到的媒体”须结合语义角色分别判断，不把确认声音机械等同本人经历、承诺或当前完成状态。原始转写和正式记忆不自动改写。
 
-适用入口：在项目根运行 `python3 scripts/soundlog_pipeline.py tick`。
-脚本不调用语义模型；定时唤醒的当前 Codex agent 负责真正阅读材料与语义筛选。
+用户入口只保留一个：在本线程说“开始”。当前agent先在项目根运行`python3 scripts/soundlog_pipeline.py start`，然后自行接续至完成，用户无需逐步运行命令。`tick/ingest/publish/finish`保留为内部管线操作；`start`不是独立运行语义模型的后台程序。
+脚本不调用语义模型；用户手动发起处理后，由当前 Codex agent 负责真正阅读材料与语义筛选。
 用户已授权发现新音频后执行本机转写与全套内容交付，不需要重复逐批确认。
 不安装依赖、不下载或试验本地语义模型、不上传音频、不确认新身份、不提交或推送；ASR沿用现有音频引擎及缓存。
 
 ## 执行到完成
 
-1. 读 AGENTS.md 和 PROJECT_STATUS.md，运行 tick。同时检查 `记忆库/运行/自动管线/questions/` 中只有request.json而没有answer.json的问题；有问题时先读取问题和检索证据、按需补充检索，用 `soundlog_library.py answer` 完成带引文回答。无音频、无未完成任务和问题时才安静结束，不生成空日记。
+1. 读 AGENTS.md 和 PROJECT_STATUS.md，运行start。它检查待处理目录、接续已有管线，并返回未回答问题；即使音频状态idle，只要有问题或未处理文件就不会标记complete。同时检查 `记忆库/运行/自动管线/questions/` 中只有request.json而没有answer.json的问题；读取问题和检索证据、按需补查，用 `soundlog_library.py answer` 完成带引文回答。无音频、无未完成任务和问题时才结束，不生成空日记。
 2. tick 会处理稳定至少60秒、14位时间戳命名的音频，复用现有音频流水线，生成不可变每日场景和完整请求。失败时读私有 audio.log 并修复可恢复问题，绝不伪造转写。
 3. awaiting_agent：读取状态给出的 requestDirectory/instructions.md 与 request.json。逐块读取完整 utterances 和 contextUtterances，用 agent 自带能力完成四类提炼。以产品实际用途判断价值；无法理解的内容可以没有事实，但每条原文须有 coverage 决策和理由。保留原时间轴，按时间间隔与内容判断场景，不能凭相邻时间认定同一事件；区分用户补充、外部播客/媒体和现场来源，未能辨识则保留未知。不得将英语测评答案或播客经历写成用户履历。身份只承接已有明确且范围受限的用户确认。
 4. 材料较长时使用 product_workbench.py 的 prepare/compile 分批保存到 `记忆库/运行/自动管线/`；每批读完即保存，不预标未读。合并全部块为符合 products.py 原格式的 envelope，填写实际 processor。用 `soundlog_pipeline.py ingest --file 完整结果.json` 导入。代码检查全部块覆盖与逐字引文，但语义仍由agent判断。
 5. awaiting_screening：读取 resultId 对应 facts.json，逐条核对摘要与实际引文，必要时回到原文邻接片段。生成 screening.json，格式见下。明确且有用途的内容保留；语义不全、主体/对象不明而无法形成有意义场景的内容暂缓，不补造。观点只按当时话语保留，健康/技术数字不自动成为专业结论；历史请求/计划/承诺不当当前任务。每条必须有决策、理由；学习材料明确分儿童/成人，无法分类的学习用途可暂缓。
 6. `soundlog_pipeline.py publish --result 结果编号 --screening 筛选.json`。只有完整筛选与来源哈希通过后才生成交付包和目录指针。读回 receipt，逐项核对交付文件哈希、首页与来源链接，抽查几条实际原文；报告真实新增日期、保留/暂缓数量与入口。正式 Basic Memory 新增写入仍须具体授权，不自动扩大两日试点。
-7. 完成下述awaiting_enrichment扩展阶段并finish后，再次 tick，直到队列与输入都清空；中断后从 state.json 继续，保留中间决策，不重复要求用户审核。
+7. 完成下述awaiting_enrichment扩展阶段并finish、个人内容与有新交付时的跨天复盘后，再次start，直到队列与输入都清空。中断后从state.json继续，保留中间决策，不重复要求用户审核。成果先达到可用、有出处、可回查，不以文案、界面或排版打磨拖延交付；无素材的功能栏目可以为空并说明。交付时给实际新增内容及可打开入口，不能只汇报阶段名或计划。
 
 ## 筛选数据
 
@@ -41,7 +43,7 @@
 - screening.json：全部保留/暂缓决策；receipt.json：状态与全部交付文件哈希。
 - 此版不提供自主执行待办、自动人物身份登记或未经检索的自然语言回答；用户在本线程问录音问题时，agent先检索交付内容并用原文回答。
 
-持续运行由 Codex 本线程每天8:00（上海时间）唤醒执行上述流程。电脑和应用须可运行；这不是离线守护程序或实时文件系统监听。脚本单次运行也可手动触发。
+2026-11-17用户取消定时流程，已删除Soundlog每日自动任务。仅在用户手动发起时执行上述流程，不主动定时检查或接续处理。工作台与命令行手动入口保留。
 
 新增日交付：筛选清单可附 dailyReviews，键为实际日期，每日含 overview（agent基于当日材料的概括）和 highlights（当日保留fact编号数组）；应实际填写，未填仅生成索引，不能称已完成每日复盘。交付器自动生成日期首页、timeline.md/json、daily-review.md/json和内容卡片，并刷新事项线索账本。事项自动跨天归并尚未实现，当前状态保持未知。
 
@@ -58,6 +60,12 @@
 问答补查必须使用`question-expand --question 原编号 --query 检索词`，不要只另建问题让网页原请求永远等待。读取request和retrieval的完整证据，先保存processing状态，失败说明真实错误。记录提问日期供相对问题锚定，原录音不擅补时区。完成答案须保留未知及媒体边界。
 
 日复盘dailyReviews可包含scenes数组；每项id为scene-前缀、type为work/life/child_learning/adult_learning、title、summary、factIds、sections（title/text/factIds）。所有fact须来自当日保留项，学习材料与儿童/成人类型一致。结构化场景须由实际时间与语义支持，卡片不是连续场景。MARK扫描可参考mark_scan.py读取完整原文邻接，扫描仅提示，不代表指令授权。
+
+## 围绕本人的内容
+
+本人声音确认后，读取`voice_calibration.my_view`及精确原文邻接，逐项维护`记忆库/运行/产品功能/personal-spec.json`；使用`soundlog_features.py personal --spec 方案.json`发布。方案schemaVersion=1、reviewer、decisions；每个决策含id、kind(commitment/request_to_me/expression/ignore)、summary、reason、selfEvidenceId、evidence(id/quote)。每项必须有用户确认的精确本人片段，不用模型疑似声纹或同号说话人扩散归属。确认撤销后，个人页面自动隐藏相应旧内容，旧版本保留。
+
+不能把所有第一人称句子当承诺；产品想法、条件、建议和引用须根据原文判断。语义不全可ignore并写理由。交办本人须另有requestEvidenceId（用户排除本人声音）、同原文件90秒内的本人回应，以及recipientProof的reason、quote（本人回应引用）；连续性只是门槛，是否确实交办仍须agent审阅，不将对别人或媒体的要求冒充给本人。首轮允许交办栏为空。当前完成状态固定未知，本阶段不自动排期、不生成外部行动。
 
 ## 每日跨天复盘
 

@@ -39,7 +39,11 @@ def call(root,name,args):
  if name=='soundlog_task':
   tasks=json.loads((delivery/'task-graph.json').read_text())['tasks'];match=next((t for t in tasks if t['id']==args['id']),None)
   if match is None:raise ValueError('事项不存在')
-  return match
+  from soundlog_memory.personal_items import view
+  ids={e['id'] for row in match['timeline'] for e in row['evidence']}
+  personal=view(root)
+  return {**match,'personalContext':[i for i in personal['items'] if any(e['id'] in ids for e in i['evidence'])],
+          'personalAttributionStale':bool(personal['stale'])}
  if name=='soundlog_topic':
   if not re.fullmatch(r'[a-z][a-z0-9-]{0,63}',args['id']):raise ValueError('主题编号无效')
   latest=json.loads((delivery/'derived/latest.json').read_text());folder=delivery/'derived'/latest['id'];name='knowledge/'+args['id']+'.json'

@@ -68,7 +68,7 @@ def handler(root,token):
     if path==prefix+'/':self.reply(200,(UI_ROOT/'index.html').read_bytes(),'text/html; charset=utf-8');return
     if path.startswith(prefix+'/assets/'):
      name=path[len(prefix+'/assets/'):]
-     if name not in {'app.css','app.js'}:raise ValueError('界面资源不存在')
+     if name not in {'app.css','app.js','personal.js'}:raise ValueError('界面资源不存在')
      self.reply(200,(UI_ROOT/name).read_bytes(),'text/css; charset=utf-8' if name.endswith('.css') else 'text/javascript; charset=utf-8');return
     if path.startswith(prefix+'/audio/'):
      self.send_audio(path[len(prefix+'/audio/'):]);return
@@ -83,6 +83,9 @@ def handler(root,token):
     if path==prefix+'/api/me':
      from soundlog_memory.voice_calibration import my_view
      self.reply(200,my_view(root));return
+    if path==prefix+'/api/personal':
+     from soundlog_memory.personal_items import view
+     self.reply(200,view(root));return
     if path==prefix+'/api/health':
      import hashlib
      self.reply(200,{'application':'soundlog-workbench','version':2,'rootKey':hashlib.sha256(str(root).encode()).hexdigest()[:24]});return
@@ -185,7 +188,7 @@ def handler(root,token):
     write_json(pipeline.home/'manual-run.json',{'state':'running'})
     def run():
      try:
-      result=pipeline.tick();write_json(pipeline.home/'manual-run.json',{'state':'completed','resultState':result['state']})
+      result=pipeline.start();write_json(pipeline.home/'manual-run.json',{'state':'completed' if result['complete'] else 'awaiting_agent','resultState':result['state'],'pendingQuestions':len(result['pendingQuestions'])})
      except Exception as error:write_json(pipeline.home/'manual-run.json',{'state':'failed','error':str(error)})
      finally:run_lock.release()
     threading.Thread(target=run,daemon=True).start();self.reply(202,{'state':'started'});return

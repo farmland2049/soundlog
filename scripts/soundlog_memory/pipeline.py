@@ -53,6 +53,23 @@ class Pipeline:
         inbox = self.root / '录音/待处理'
         return sorted(p for p in inbox.iterdir() if p.is_file() and p.suffix.lower() in AUDIO) if inbox.exists() else []
 
+    def start(self):
+        """One entry for the calling agent; idle audio does not mean all work is done."""
+        files = [p.name for p in self.inventory()]
+        state = self.tick()
+        questions = []
+        for path in sorted((self.home/'questions').glob('question-*/request.json')):
+            if (path.parent/'answer.json').exists(): continue
+            request = json.loads(path.read_text())
+            questions.append({'id': path.parent.name, 'question': request['question'], 'directory': str(path.parent)})
+        remaining = [p.name for p in self.inventory()]
+        complete = state['state'] == 'idle' and not remaining and not questions
+        return {**state, 'checkedAudioFiles': files, 'remainingAudioFiles': remaining,
+                'pendingQuestions': questions, 'complete': complete,
+                'agentInstructions': str(self.root/'scripts/pipeline-agent.md'),
+                'execution': 'current_agent',
+                'boundary': '脚本处理本机确定性阶段；当前agent须继续提炼、筛选、派生交付及问题回答，不能把单步返回当全流程完成。'}
+
     def tick(self):
         with self.lock():
             state = self.state()

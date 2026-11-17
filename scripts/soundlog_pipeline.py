@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one durable step; scheduled agent turns handle semantic work."""
+"""Start a manual agent workflow, or run a durable pipeline operation."""
 import argparse
 import json
 from pathlib import Path
@@ -10,6 +10,7 @@ def main():
     p = argparse.ArgumentParser(description='本地音频全流程管线')
     p.add_argument('--root', type=Path, default=Path(__file__).resolve().parent.parent)
     sub = p.add_subparsers(dest='command', required=True)
+    sub.add_parser('start', help='统一手动入口；检查音频和问题队列，由当前agent接续到成果交付')
     sub.add_parser('tick', help='检测输入、处理音频并准备agent任务；已有任务优先续做')
     sub.add_parser('status')
     ingest = sub.add_parser('ingest'); ingest.add_argument('--file', type=Path, required=True)
@@ -19,7 +20,8 @@ def main():
     a = p.parse_args()
     try:
         pipeline = Pipeline(a.root)
-        if a.command == 'tick': result = pipeline.tick()
+        if a.command == 'start': result = pipeline.start()
+        elif a.command == 'tick': result = pipeline.tick()
         elif a.command == 'status': result = pipeline.state()
         elif a.command == 'ingest': result = pipeline.ingest(json.loads(a.file.read_text()))
         elif a.command == 'finish': result = pipeline.finish_products(json.loads(a.spec.read_text()), json.loads(a.links.read_text()))

@@ -1,0 +1,4 @@
+interface:
+  display_name: "soundlog"
+  short_description: "处理随身录音并接续到成果交付，支持日记、个人事项、学习整理和原文证据问答"
+  default_prompt: "使用 $soundlog 检查待处理录音和未完成任务，沿既有管线处理到分析结束并交付成果。"
