@@ -11,6 +11,9 @@ import time
 import urllib.request
 from urllib.parse import urlsplit
 
+# Loopback health checks must not pass through system HTTP proxies.
+local_urlopen = urllib.request.build_opener(urllib.request.ProxyHandler({})).open
+
 
 def root_key(root):
     return hashlib.sha256(str(Path(root).resolve()).encode()).hexdigest()[:24]
@@ -22,7 +25,7 @@ def healthy(config, root):
         if parts.scheme!='http' or parts.hostname!='127.0.0.1' or not parts.port or parts.query or parts.fragment:return False
         import re
         if not re.fullmatch(r'/[A-Za-z0-9_-]{24,}/',parts.path):return False
-        with urllib.request.urlopen(url+'api/health',timeout=1) as response:data=json.load(response)
+        with local_urlopen(url+'api/health',timeout=1) as response:data=json.load(response)
         return data.get('application')=='soundlog-workbench' and data.get('rootKey')==root_key(root)
     except (OSError,ValueError,KeyError):return False
 

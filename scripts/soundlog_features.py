@@ -11,6 +11,7 @@ def main():
  a=sub.add_parser('tasks');a.add_argument('--links',type=Path,required=True)
  a=sub.add_parser('derive');a.add_argument('--spec',type=Path,required=True)
  a=sub.add_parser('personal');a.add_argument('--spec',type=Path,required=True)
+ a=sub.add_parser('products');a.add_argument('--spec',type=Path,required=True)
  a=sub.add_parser('review');a.add_argument('--from',dest='start',required=True);a.add_argument('--to',dest='end',required=True);a.add_argument('--spec',type=Path)
  a=p.parse_args();delivery=a.root/'产出/自动交付';home=a.root/'记忆库/运行/产品功能';home.mkdir(parents=True,exist_ok=True)
  from soundlog_memory.pipeline import Pipeline
@@ -18,6 +19,9 @@ def main():
   with Pipeline(a.root).lock():
    if a.command=='tasks':result=publish_task_graph(delivery,home,json.loads(a.links.read_text()))
    elif a.command=='derive':result=publish_derived(delivery,json.loads(a.spec.read_text()),a.root/'产出/大模型分析素材/每日场景-v2')
+   elif a.command=='products':
+    from soundlog_memory.product_view import publish
+    result=publish(a.root,json.loads(a.spec.read_text()))
    elif a.command=='personal':
     from soundlog_memory.personal_items import publish
     result=publish(a.root,json.loads(a.spec.read_text()))

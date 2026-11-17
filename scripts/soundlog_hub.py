@@ -65,10 +65,16 @@ def handler(root,token):
    try:
     if path==prefix:
      self.send_response(302);self.send_header('Location',prefix+'/');self.end_headers();return
-    if path==prefix+'/':self.reply(200,(UI_ROOT/'index.html').read_bytes(),'text/html; charset=utf-8');return
+    if path==prefix+'/':self.reply(200,(UI_ROOT/'product.html').read_bytes(),'text/html; charset=utf-8');return
+    if path==prefix+'/debug':
+     self.send_response(302);self.send_header('Location',prefix+'/debug/');self.end_headers();return
+    if path==prefix+'/debug/':self.reply(200,(UI_ROOT/'index.html').read_bytes(),'text/html; charset=utf-8');return
+    if path==prefix+'/api/products':
+     from soundlog_memory.product_view import results
+     self.reply(200,results(pipeline));return
     if path.startswith(prefix+'/assets/'):
      name=path[len(prefix+'/assets/'):]
-     if name not in {'app.css','app.js','personal.js'}:raise ValueError('界面资源不存在')
+     if name not in {'app.css','app.js','personal.js','product.css','product.js'}:raise ValueError('界面资源不存在')
      self.reply(200,(UI_ROOT/name).read_bytes(),'text/css; charset=utf-8' if name.endswith('.css') else 'text/javascript; charset=utf-8');return
     if path.startswith(prefix+'/audio/'):
      self.send_audio(path[len(prefix+'/audio/'):]);return
@@ -89,6 +95,17 @@ def handler(root,token):
     if path==prefix+'/api/health':
      import hashlib
      self.reply(200,{'application':'soundlog-workbench','version':2,'rootKey':hashlib.sha256(str(root).encode()).hexdigest()[:24]});return
+    if path==prefix+'/api/run-status':
+     manual=pipeline.home/'manual-run.json'
+     status=json.loads(manual.read_text()) if manual.exists() else {}
+     phase=pipeline.state()['state']
+     running=run_lock.locked()
+     if running:state='running';message='正在处理录音…'
+     elif status.get('state')=='failed':state='failed';message='处理遇到问题，请到调试后台查看。'
+     elif phase in {'awaiting_agent','awaiting_screening','awaiting_enrichment'} or status.get('pendingQuestions',0):state='needs_agent';message='音频已就绪，请回到 Soundlog 对话说“继续”完成整理。'
+     elif status.get('state')=='completed':state='completed';message='检查完成，当前没有待处理录音。'
+     else:state='idle';message=''
+     self.reply(200,{'state':state,'message':message});return
     if path==prefix+'/api/workbench':self.reply(200,workbench_view.overview(pipeline));return
     if path==prefix+'/api/day':self.reply(200,workbench_view.day_view(pipeline,parse_qs(url.query).get('date',[''])[0]));return
     if path==prefix+'/api/tasks':

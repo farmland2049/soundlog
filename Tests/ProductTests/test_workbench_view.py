@@ -42,7 +42,7 @@ class WorkbenchViewTests(unittest.TestCase):
    def __enter__(self):return self
    def __exit__(self,*args):pass
    def read(self):return json.dumps({'application':'soundlog-workbench','rootKey':root_key(workspace)}).encode()
-  with patch('launch_soundlog.urllib.request.urlopen',return_value=Response()):
+  with patch('launch_soundlog.local_urlopen',return_value=Response()):
    self.assertTrue(healthy({'url':'http://127.0.0.1:1234/'+'a'*24+'/'},self.f.root))
    self.assertFalse(healthy({'url':'http://127.0.0.1:1234/'+'a'*24+'/'},Path('/different-root')))
 
@@ -63,3 +63,21 @@ class WorkbenchHTTPTests(unittest.TestCase):
   self.assertEqual(self.req('/token/assets/../../README.md')[0],400)
   self.assertEqual(self.req('/token/api/day?date=2026-12-01')[0],400)
   self.assertEqual(self.req('/token/api/run','POST',{},'https://evil.example')[0],404)
+
+ def test_product_root_and_debug_are_separate_and_products_are_available(self):
+  code,body=self.req('/token/');self.assertEqual(code,200);self.assertIn('assets/product.js',body.decode())
+  self.assertNotIn('open-comparison',body.decode())
+  code,body=self.req('/token/debug/');self.assertEqual(code,200);self.assertIn('../assets/app.js',body.decode())
+  self.assertIn('调试后台',body.decode())
+  code,body=self.req('/token/api/products');self.assertEqual(code,200);self.assertIn('activities',json.loads(body))
+  for asset in ['product.css','product.js']:
+   self.assertEqual(self.req('/token/assets/'+asset)[0],200)
+ def test_run_status_does_not_report_semantic_handoff_as_complete(self):
+  code,body=self.req('/token/api/run-status');self.assertEqual(code,200)
+  self.assertEqual(json.loads(body)['state'],'needs_agent')
+  self.assertNotIn('requestDirectory',body.decode())
+ def test_run_status_shows_failure_without_exposing_logs(self):
+  from soundlog_memory.store import write_json
+  write_json(self.p.home/'manual-run.json',{'state':'failed','error':'private/path/audio.log'})
+  code,body=self.req('/token/api/run-status');self.assertEqual(code,200)
+  self.assertEqual(json.loads(body)['state'],'failed');self.assertNotIn('private/path',body.decode())
