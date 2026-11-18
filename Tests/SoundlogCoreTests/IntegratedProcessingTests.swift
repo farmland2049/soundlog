@@ -494,6 +494,16 @@ final class IntegratedProcessingTests: XCTestCase {
         XCTAssertEqual(result.method, "mvhd/mdhd")
     }
 
+    func testM4AContainerTakesPrecedenceOverEmbeddedMP3Frame() {
+        func u32(_ value: UInt32) -> Data { Data([UInt8(value >> 24), UInt8((value >> 16) & 255), UInt8((value >> 8) & 255), UInt8(value & 255)]) }
+        func atom(_ type: String, _ payload: Data) -> Data { u32(UInt32(payload.count + 8)) + Data(type.utf8) + payload }
+        let mvhd = Data(repeating: 0, count: 12) + u32(1000) + u32(12_345) + Data(repeating: 0, count: 20)
+        let data = atom("ftyp", Data("M4A ".utf8) + Data(repeating: 0, count: 8)) + atom("mdat", mp3Frame(vbriFrames: 80)) + atom("moov", atom("mvhd", mvhd))
+        let result = UnifiedOutput.audioDuration(data: data)
+        XCTAssertEqual(try XCTUnwrap(result.seconds), 12.345, accuracy: 0.000001)
+        XCTAssertEqual(result.method, "mvhd/mdhd")
+    }
+
     func testSyntheticM4ARejectsOverflowingLargeAtomSize() {
         let bytes = Data([0,0,0,1]) + Data("moov".utf8) + Data(repeating: 0xff, count: 8)
         let result = UnifiedOutput.audioDuration(data: bytes)

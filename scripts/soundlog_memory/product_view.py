@@ -12,6 +12,11 @@ def _digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
+def _fact_digest(fact):
+    # A fact's delivery bundle is a mutable storage pointer, not reviewed content.
+    return _digest({key:value for key,value in fact.items() if key!='deliveryBundle'})
+
+
 def publish(root, spec):
     root = Path(root); delivery = root/'产出/自动交付'
     facts = {f['id']: f for f in library(delivery)}
@@ -35,7 +40,7 @@ def publish(root, spec):
                     raise ValueError('成果段落必须有活动范围内的依据')
                 if section == 'actions' and any('actions' not in facts[fid]['selectedCategories'] for fid in row['factIds']):
                     raise ValueError('待办不能从非事项材料生成')
-        for fid in ids: bindings[fid] = _digest(facts[fid])
+        for fid in ids: bindings[fid] = _fact_digest(facts[fid])
     document = {'spec': spec, 'bindings': bindings}
     identifier = 'product-view-' + _digest(document)[:24]
     home = delivery/'product-views'; folder = home/identifier
@@ -56,7 +61,7 @@ def _activities(pipeline, facts):
     if not re.fullmatch(r'product-view-[a-f0-9]{24}', identifier): raise ValueError('成果路径无效')
     document = workbench_view.artifact(pipeline.delivery, 'product-views/'+identifier+'/view.json')
     for fid, binding in document['bindings'].items():
-        if fid not in facts or _digest(facts[fid]) != binding:
+        if fid not in facts or _fact_digest(facts[fid]) != binding:
             raise ValueError('成果依据已有更新，请重新整理后查看')
     # Explicit allowlist: no transcript, offsets, source files, internal IDs or hashes.
     output = []

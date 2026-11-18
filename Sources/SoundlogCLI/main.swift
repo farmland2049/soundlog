@@ -297,13 +297,13 @@ import SoundlogCore
                             if FileManager.default.fileExists(atPath: url.path) { artifactURLs[name] = url }
                         }
                         let coverageStarted = Date()
-                        if let duration, let coverage = try? UnifiedOutput.coverageReport(ranges: ranges, duration: duration), coverage.gaps.isEmpty {
+                        if let duration, let _ = try? UnifiedOutput.coverageReport(ranges: ranges, duration: duration) {
                             try? record("inputCoverage", "completed")
                             status.modules["inputCoverage"]?.execution = "recomputed"
                             status.modules["inputCoverage"]?.wallClockSeconds = Date().timeIntervalSince(coverageStarted)
                             try? AtomicFile.write(try encoder.encode(status), to: statusURL)
                         } else if duration != nil {
-                            try? record("inputCoverage", "incomplete", "覆盖存在缺口或无转写覆盖")
+                            try? record("inputCoverage", "incomplete", "处理范围超出音频时长或范围无效")
                             status.modules["inputCoverage"]?.execution = "recomputed"
                             status.modules["inputCoverage"]?.wallClockSeconds = Date().timeIntervalSince(coverageStarted)
                             try? AtomicFile.write(try encoder.encode(status), to: statusURL)

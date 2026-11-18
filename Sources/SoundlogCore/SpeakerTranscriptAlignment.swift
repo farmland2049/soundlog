@@ -55,6 +55,11 @@ public struct SpeakerTranscriptAlignmentPipeline: Sendable {
         catch { throw TranscriptionError.invalidStartTime(file.lastPathComponent) }
         let entries = try raw.segments.compactMap { transcript -> SpeakerAlignedTranscriptEntry? in
             guard !transcript.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            // Keep the raw machine transcript intact, but omit punctuation-only
+            // recognition noise from the aligned transcript and downstream products.
+            guard transcript.text.unicodeScalars.contains(where: {
+                CharacterSet.letters.contains($0) || CharacterSet.decimalDigits.contains($0)
+            }) else { return nil }
             let textRange = try AudioTimeRange(
                 startOffsetSeconds: transcript.startOffsetSeconds,
                 endOffsetSeconds: transcript.endOffsetSeconds

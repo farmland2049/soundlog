@@ -34,7 +34,11 @@ public struct SpeakerTimelineEntry: Codable, Equatable, Sendable {
 
 public struct SpeakerEngineResult: Sendable {
     public let segments: [SpeakerSegment]
-    public init(segments: [SpeakerSegment]) { self.segments = segments }
+    public let accuracyAssessment: String
+    public init(segments: [SpeakerSegment], accuracyAssessment: String = "not_evaluated") {
+        self.segments = segments
+        self.accuracyAssessment = accuracyAssessment
+    }
 }
 
 public protocol SpeakerDiarizationEngine: Sendable {
@@ -79,7 +83,7 @@ public struct SpeakerTimelinePipeline: Sendable {
             recordingStartLocal: try recordingStart.timestamp(atOffsetSeconds: 0),
             engine: engine.identifier,
             segments: entries,
-            accuracyAssessment: "not_evaluated"
+            accuracyAssessment: result.accuracyAssessment
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

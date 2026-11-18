@@ -81,3 +81,77 @@ class WorkbenchHTTPTests(unittest.TestCase):
   write_json(self.p.home/'manual-run.json',{'state':'failed','error':'private/path/audio.log'})
   code,body=self.req('/token/api/run-status');self.assertEqual(code,200)
   self.assertEqual(json.loads(body)['state'],'failed');self.assertNotIn('private/path',body.decode())
+ def test_audio_source_settings_round_trip_and_origin_guard(self):
+  setting={'voiceMemos':False,'directories':['/Volumes/Disconnected/RECORD']}
+  self.assertEqual(self.req('/token/api/audio-sources','POST',setting)[0],200)
+  self.assertEqual(json.loads(self.req('/token/api/audio-sources')[1]),setting)
+  self.assertEqual(self.req('/token/api/audio-sources','POST',setting,'https://evil.example')[0],404)
+  self.assertEqual(self.req('/token/api/audio-imports')[0],200)
+ def test_collectors_finish_before_pipeline_starts(self):
+  import time
+  from unittest.mock import patch
+  from soundlog_memory.pipeline import Pipeline
+  calls=[]
+  def collect(root):calls.append('collect');return {'copied':0}
+  def start(pipeline):calls.append('pipeline');return {'complete':True,'state':'idle','pendingQuestions':[]}
+  with patch('soundlog_memory.audio_sources.collect',collect),patch.object(Pipeline,'start',start):
+   self.assertEqual(self.req('/token/api/run','POST')[0],202)
+   for _ in range(100):
+    status=json.loads(self.req('/token/api/run-status')[1])
+    if status['state']!='running':break
+    time.sleep(.01)
+  self.assertEqual(calls,['collect','pipeline'])
+
+ def test_agent_prompt_describes_live_handoff_without_exposing_transcript(self):
+  code,body=self.req('/token/api/run-status')
+  self.assertEqual(code,200)
+  prompt=json.loads(body)['agentPrompt']
+  self.assertIn(str(self.p.root),prompt)
+  self.assertIn('scripts/pipeline-agent.md',prompt)
+  self.assertIn('完成派生成果和发布',prompt)
+  self.assertNotIn(self.f.fact()['summary'],prompt)
+
+ def test_completed_question_does_not_leave_stale_handoff(self):
+  from soundlog_memory.store import write_json
+  self.p.save({'state':'idle'})
+  write_json(self.p.home/'manual-run.json',{'state':'awaiting_agent','pendingQuestions':1})
+  folder=self.p.home/'questions/question-example'
+  folder.mkdir(parents=True)
+  write_json(folder/'request.json',{'question':'private question'})
+  _,body=self.req('/token/api/run-status')
+  self.assertIn('待答问题 1 条',json.loads(body)['agentPrompt'])
+  write_json(folder/'answer.json',{})
+  _,body=self.req('/token/api/run-status')
+  self.assertIsNone(json.loads(body)['agentPrompt'])
+
+ def test_button_invokes_codex_and_rejects_exit_without_pipeline_completion(self):
+  import threading
+  from soundlog_memory import agent_runner
+  entered=threading.Event()
+  release=threading.Event()
+  calls=[]
+
+  def run(pipeline,prompt):
+   calls.append(prompt)
+   entered.set()
+   release.wait(3)
+
+  with patch('soundlog_memory.audio_sources.collect'), patch.object(agent_runner,'run_codex',run):
+   try:
+    self.assertEqual(self.req('/token/api/run','POST')[0],202)
+    self.assertTrue(entered.wait(3))
+    self.assertIn('$soundlog',calls[0])
+    status=json.loads(self.req('/token/api/run-status')[1])
+    self.assertEqual(status['state'],'running')
+    self.assertIsNone(status['agentPrompt'])
+    self.assertEqual(json.loads(self.req('/token/api/run','POST')[1])['state'],'already_running')
+   finally:
+    release.set()
+   import time
+   for _ in range(100):
+    status=json.loads(self.req('/token/api/run-status')[1])
+    if status['state']=='agent_failed':break
+    time.sleep(.01)
+   self.assertEqual(status['state'],'agent_failed')
+   self.assertIn('$soundlog',status['agentPrompt'])
+   self.assertEqual(len(calls),1)

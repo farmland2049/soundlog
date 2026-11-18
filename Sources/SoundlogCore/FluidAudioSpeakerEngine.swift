@@ -75,14 +75,20 @@ public struct FluidAudioSpeakerEngine: SpeakerDiarizationEngine {
         let models = try await OfflineDiarizerModels.load(from: modelsDirectory)
         let manager = OfflineDiarizerManager(config: config)
         manager.initialize(models: models)
-        let result = try await manager.process(file)
-        return SpeakerEngineResult(segments: result.segments.map {
-            SpeakerSegment(
-                speakerID: $0.speakerId,
-                startOffsetSeconds: Double($0.startTimeSeconds),
-                endOffsetSeconds: Double($0.endTimeSeconds)
-            )
-        })
+        do {
+            let result = try await manager.process(file)
+            return SpeakerEngineResult(segments: result.segments.map {
+                SpeakerSegment(
+                    speakerID: $0.speakerId,
+                    startOffsetSeconds: Double($0.startTimeSeconds),
+                    endOffsetSeconds: Double($0.endTimeSeconds)
+                )
+            })
+        } catch OfflineDiarizationError.noSpeechDetected {
+            // No speech is a valid outcome for everyday recordings. Preserve an
+            // empty timeline so sound events and the remaining pipeline can continue.
+            return SpeakerEngineResult(segments: [], accuracyAssessment: "no_speech_detected")
+        }
     }
 
     private static func loadManifest() throws -> FluidAudioModelManifest {

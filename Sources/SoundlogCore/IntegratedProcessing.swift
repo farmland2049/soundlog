@@ -477,6 +477,10 @@ public enum UnifiedOutput {
         let head = try read(0, 12)
         if head.count >= 12, String(data: head[0..<4], encoding: .ascii) == "RIFF", String(data: head[8..<12], encoding: .ascii) == "WAVE",
            let duration = try wavDuration(fileLength: length, read: read) { return AudioDuration(seconds: duration, method: "wav-data-size", error: nil) }
+        if head.count >= 8, String(data: head[4..<8], encoding: .ascii) == "ftyp" {
+            if let seconds = try mp4Duration(fileLength: length, read: read) { return AudioDuration(seconds: seconds, method: "mvhd/mdhd", error: nil) }
+            return AudioDuration(seconds: nil, method: "failed", error: "M4A中未找到有效mvhd/mdhd时长")
+        }
         if let mp3 = try mp3Duration(fileLength: length, read: read) { return AudioDuration(seconds: mp3.seconds, method: mp3.method, error: nil) }
         if let mp4 = try mp4Duration(fileLength: length, read: read) { return AudioDuration(seconds: mp4, method: "mvhd/mdhd", error: nil) }
         if head.prefix(3).elementsEqual(Data("ID3".utf8)) || head.count >= 2 && head[0] == 0xff && head[1] & 0xe0 == 0xe0 { return AudioDuration(seconds: nil, method: "failed", error: "MP3帧头或时长元数据无效/截断") }
@@ -577,6 +581,10 @@ public enum UnifiedOutput {
 
     public static func audioDuration(data: Data) -> AudioDuration {
         if let wav = wavDuration(data: data) { return AudioDuration(seconds: wav, method: "wav-data-size", error: nil) }
+        if data.count >= 8, String(data: data[4..<8], encoding: .ascii) == "ftyp" {
+            if let seconds = mp4Duration(data: data) { return AudioDuration(seconds: seconds, method: "mvhd/mdhd", error: nil) }
+            return AudioDuration(seconds: nil, method: "failed", error: "M4A中未找到有效mvhd/mdhd时长")
+        }
         if let mp3 = mp3Duration(data: data) { return AudioDuration(seconds: mp3.seconds, method: mp3.method, error: nil) }
         if let mp4 = mp4Duration(data: data) { return AudioDuration(seconds: mp4, method: "mvhd/mdhd", error: nil) }
         let prefix = String(data: data.prefix(12), encoding: .ascii) ?? ""
