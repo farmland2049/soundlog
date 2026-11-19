@@ -36,17 +36,19 @@ def product_version(pipeline):
 
 
 def verify_completion(pipeline, prior_state, prior_product):
-    current = pipeline.state()
-    if current['state'] != 'idle' or pipeline.inventory() or pending_questions(pipeline):
-        raise RuntimeError('Agent 已退出，管线仍有待处理工作')
-    published = current.get('lastBundle')
-    if published and (
-        published != prior_state.get('lastBundle') or prior_state['state'] == 'awaiting_enrichment'
-    ):
-        version = product_version(pipeline)
-        if not version or version == prior_product:
-            raise RuntimeError('成果页面缺少本轮发布回执')
-    # Loads and verifies the same delivery artifacts as the product page.
-    if published:
+    with pipeline.lock():
+        current = pipeline.state()
+        if current['state'] != 'idle' or pipeline.inventory() or pending_questions(pipeline):
+            raise RuntimeError('Agent 已退出，管线仍有待处理工作')
+        published = current.get('lastBundle')
+        if not published:
+            return current
+        # Verify existing bindings before carrying old activities forward.
         product_view.results(pipeline)
-    return current
+        needs_new_view = published != prior_state.get('lastBundle') or prior_state['state'] == 'awaiting_enrichment'
+        if needs_new_view and product_version(pipeline) in {None, prior_product}:
+            recovered = product_view.publish_reviewed_scenes(pipeline, published)
+            if not recovered or recovered['id'] == prior_product:
+                raise RuntimeError('成果页缺少本轮发布回执，且没有可自动补发的当日场景')
+            product_view.results(pipeline)
+        return current

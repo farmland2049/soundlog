@@ -78,3 +78,5 @@
 方案格式见`soundlog_memory/product_view.py`实际验证器：schemaVersion=1、reviewer、activities；每项id、kind(meeting/conversation/event)、date、title、summary、factIds；minutes/decisions/actions/openItems为text、factIds数组，可附有依据的owner、due。引用当日保留事实；actions仅引用事项材料。原文、文件偏移、声纹校准、哈希、筛选和运行状态保留在后台，主界面不呈现。标题是agent对场景的整理命名，不捏造正式会议名称、参会人或精确会议起止；页面时段由引用内容覆盖计算。旧成果方案需合并维护，不覆盖其他日期。语义歧义能略过就留后台原因，只把影响理解的未知简短写进成果。
 
 产品层已发布、对应页面API可读且原文绑定核对通过后，才将本轮称为完成；新成果不自动修改日历、发送消息或扩大正式记忆写入。
+
+按钮运行结束时，如果新交付包已有审阅过的日复盘和场景，但成果视图仍停在旧版本，核验程序会尝试把当日已审阅场景作为事件卡补发，随后重新核对成果页。已有手工整理的日期保留原方案；仍缺摘要或可用场景时，继续按上面的成果方案流程补齐。

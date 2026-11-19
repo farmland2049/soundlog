@@ -54,12 +54,49 @@ def publish(root, spec):
     return {'id':identifier, 'activities':len(spec['activities'])}
 
 
-def _activities(pipeline, facts):
+def _latest_view(pipeline):
     path = pipeline.delivery/'product-views/latest.json'
-    if not path.exists(): return []
+    if not path.exists(): return None
     identifier = json.loads(path.read_text())['id']
     if not re.fullmatch(r'product-view-[a-f0-9]{24}', identifier): raise ValueError('成果路径无效')
-    document = workbench_view.artifact(pipeline.delivery, 'product-views/'+identifier+'/view.json')
+    return workbench_view.artifact(pipeline.delivery, 'product-views/'+identifier+'/view.json')
+
+
+def publish_reviewed_scenes(pipeline, bundle):
+    """Publish already reviewed scenes when a new day has no product view yet."""
+    document = _latest_view(pipeline)
+    spec = document['spec'] if document else {'schemaVersion': 1, 'reviewer': '复用已审阅的每日复盘场景'}
+    activities = list(spec.get('activities', []))
+    catalog = json.loads((pipeline.delivery/'catalog.json').read_text())['days']
+    days = sorted(date for date, current in catalog.items() if current == bundle)
+    if not days or any(item['date'] in days for item in activities):
+        return None
+    existing_ids = {item['id'] for item in activities}
+    for date in days:
+        base = f'{bundle}/{date}'
+        review = workbench_view.artifact(pipeline.delivery, f'{base}/daily-review.json')
+        scenes = workbench_view.artifact(pipeline.delivery, f'{base}/scenes.json')
+        if review.get('mode') != 'agent_overview' or not (review.get('overview') or '').strip():
+            return None
+        if scenes['contentCards'] and not scenes['reviewedScenes']:
+            return None
+        for scene in scenes['reviewedScenes']:
+            identifier = scene['id']
+            if identifier in existing_ids:
+                return None
+            existing_ids.add(identifier)
+            activities.append({
+                'id': identifier, 'kind': 'event', 'date': date,
+                'title': scene['title'], 'summary': scene['summary'], 'factIds': scene['factIds'],
+                'minutes': [{'text': section['text'], 'factIds': section['factIds']}
+                            for section in scene.get('sections', [])],
+            })
+    return publish(pipeline.root, {**spec, 'activities': activities, 'reviewedSceneBundle': bundle})
+
+
+def _activities(pipeline, facts):
+    document = _latest_view(pipeline)
+    if document is None: return []
     for fid, binding in document['bindings'].items():
         if fid not in facts or _fact_digest(facts[fid]) != binding:
             raise ValueError('成果依据已有更新，请重新整理后查看')
