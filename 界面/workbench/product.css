@@ -18,3 +18,19 @@ dialog{width:min(580px,92vw);border:1px solid #dce3d7;border-radius:16px;padding
 .pipeline-progress[data-state=failed] .progress-fill{background:#c66d58}
 .pipeline-progress[data-state=completed] .progress-fill{background:#3c7654}
 @media(max-width:850px){.pipeline-progress{order:-1;flex:1 1 100%;min-width:220px;max-width:360px}.header-actions{align-items:center}#run-status{order:2}}
+
+.settings-section + .settings-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid #dce3d7; }
+.settings-section h3 { margin: 0 0 14px; font-size: 17px; }
+#agent-settings-form > label { display: block; margin: 12px 0 5px; }
+#agent-settings-form > select, #agent-settings-form > input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid #dce3d7;
+  border-radius: 8px;
+  background: white;
+  color: inherit;
+  font: inherit;
+}
+.settings-status { font-size: 13px; line-height: 1.6; }
+.settings-buttons button:disabled { opacity: .55; cursor: default; }

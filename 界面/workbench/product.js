@@ -101,8 +101,72 @@ document.querySelector('#refresh').onclick=checkRun;
 checkRun();
 
 const settingsDialog=document.querySelector('#settings-dialog'),settingsStatus=document.querySelector('#settings-status');
+const agentForm=document.querySelector('#agent-settings-form');
+const defaultAgent=document.querySelector('#default-agent');
+const defaultModel=document.querySelector('#default-model');
+const agentStatus=document.querySelector('#agent-settings-status');
+const agentSave=agentForm.querySelector('button[type="submit"]');
+let savedAgentSettings=null;
+let agentLoadRevision=0;
+
+function setAgentFieldsEnabled(enabled){
+ defaultAgent.disabled=!enabled;
+ defaultModel.disabled=!enabled;
+ agentSave.disabled=!enabled||!defaultAgent.value||defaultAgent.selectedOptions[0]?.disabled;
+}
+
+async function loadAgentSettings(){
+ const revision=++agentLoadRevision;
+ agentStatus.textContent='正在读取整理设置…';
+ setAgentFieldsEnabled(false);
+ try{
+  const response=await fetch(base+'/api/agent-settings',{cache:'no-store'});
+  if(!response.ok)throw Error('读取失败');
+  const settings=await response.json();
+  if(revision!==agentLoadRevision)return;
+  savedAgentSettings=settings;
+  defaultAgent.replaceChildren(...settings.agents.map(agent=>{
+   const option=new Option(agent.label+(agent.available?'':'（本机不可用）'),agent.id);
+   option.disabled=!agent.available;
+   return option;
+  }));
+  defaultAgent.value=settings.agent;
+  defaultModel.value=settings.model;
+  setAgentFieldsEnabled(true);
+  agentStatus.textContent=agentSave.disabled?'请选择本机可用的 Agent。':'';
+ }catch{
+  if(revision===agentLoadRevision)agentStatus.textContent='暂时无法读取整理设置，请关闭后重试。';
+ }
+}
+
+defaultAgent.onchange=()=>{
+ defaultModel.value=defaultAgent.value===savedAgentSettings?.agent?savedAgentSettings.model:'';
+ setAgentFieldsEnabled(true);
+ agentStatus.textContent='';
+};
+agentForm.onsubmit=async event=>{
+ event.preventDefault();
+ const revision=agentLoadRevision;
+ const data={agent:defaultAgent.value,model:defaultModel.value.trim()};
+ setAgentFieldsEnabled(false);
+ try{
+  const response=await fetch(base+'/api/agent-settings',{method:'POST',
+   headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  const settings=await response.json();
+  if(!response.ok)throw Error(settings.error||'保存失败');
+  if(revision!==agentLoadRevision)return;
+  savedAgentSettings=settings;
+  defaultModel.value=settings.model;
+  agentStatus.textContent='已保存，下次调用 Agent 时生效。';
+ }catch(error){
+  if(revision===agentLoadRevision)agentStatus.textContent=error.message;
+ }finally{
+  if(revision===agentLoadRevision)setAgentFieldsEnabled(true);
+ }
+};
 document.querySelector('#open-settings').onclick=async()=>{
  settingsStatus.textContent='';settingsDialog.showModal();
+ loadAgentSettings();
  try{const r=await fetch(base+'/api/audio-sources');if(!r.ok)throw Error('读取失败');const s=await r.json();document.querySelector('#sources-form button[type="submit"]').disabled=false;document.querySelector('#source-memos').checked=s.voiceMemos;document.querySelector('#source-directories').value=s.directories.join('\n');const history=await fetch(base+'/api/audio-imports');if(history.ok){const last=await history.json();if(last.date)settingsStatus.textContent='最近检查：导入 '+last.copied+' 份，重复 '+last.duplicates+' 份，跳过 '+last.skipped+' 份。'}}
  catch{settingsStatus.textContent='读取设置失败，请关闭后重试。';document.querySelector('#sources-form button[type="submit"]').disabled=true}
 };

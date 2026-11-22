@@ -132,6 +132,8 @@ def handler(root,token):
     if path==prefix+'/api/audio-sources':
      from soundlog_memory.audio_sources import settings
      self.reply(200,settings(root));return
+    if path==prefix+'/api/agent-settings':
+     self.reply(200,agent_runner.settings_view(pipeline));return
     if path==prefix+'/api/audio-imports':
      p=pipeline.home/'audio-import-receipt.json'
      self.reply(200,json.loads(p.read_text()) if p.exists() else {'copied':0,'duplicates':0,'skipped':0,'notes':[]});return
@@ -147,11 +149,12 @@ def handler(root,token):
      )
      if running:
       state='running'
-      message='Codex 正在整理并发布成果…' if status.get('state')=='agent_running' else '正在导入或转写录音…'
+      agent=agent_runner.AGENTS.get((status.get('agentSettings') or {}).get('agent'),'Agent')
+      message=f'{agent} 正在整理并发布成果…' if status.get('state')=='agent_running' else '正在导入或转写录音…'
      elif status.get('state')=='agent_failed':
-      state='agent_failed';message='Codex 整理未完成，进度已保留。点击「开始处理录音」重试。'
+      state='agent_failed';message='Agent 整理未完成，进度已保留。点击「开始处理录音」重试。'
      elif status.get('state')=='failed':state='failed';message='音频处理失败，文件已保留。可查看处理历史后重试。'
-     elif prompt:state='needs_agent';message='有内容待整理，点击「开始处理录音」可启动 Codex。'
+     elif prompt:state='needs_agent';message='有内容待整理，点击「开始处理录音」可启动 Agent。'
      elif status.get('resultState')=='waiting_for_stable_files' and pipeline.inventory():state='waiting';message='录音仍在写入，请稍后再试。'
      elif status.get('state')=='completed' and phase=='idle' and not pipeline.inventory():
       state='completed';message='录音整理和成果检查已完成。' if status.get('agentRan') else '检查完成，当前没有待处理录音。'
@@ -241,6 +244,13 @@ def handler(root,token):
     except (BrokenPipeError,ConnectionResetError):pass
   def do_POST(self):
    if not self.allowed():self.send_error(404);return
+   if urlsplit(self.path).path==prefix+'/api/agent-settings':
+    try:
+     length=int(self.headers.get('Content-Length','0'))
+     if not 0<length<=2048:raise ValueError('设置长度无效')
+     self.reply(200,agent_runner.save_settings(pipeline,json.loads(self.rfile.read(length))))
+    except (OSError,ValueError,KeyError,TypeError) as error:self.reply(400,{'error':str(error)})
+    return
    if urlsplit(self.path).path==prefix+'/api/audio-sources':
     try:
      length=int(self.headers.get('Content-Length','0'))
@@ -265,6 +275,7 @@ def handler(root,token):
     receipt=pipeline.home/'manual-run.json'
     def run():
      baseline=None
+     selected=None
      try:
       previous=json.loads(receipt.read_text()) if receipt.exists() else {}
       baseline=previous.get('agentBaseline')
@@ -279,14 +290,15 @@ def handler(root,token):
        if baseline is None:
         baseline={'state':result['state'],'lastBundle':result.get('lastBundle'),
                   'deliveryDays':product_view.delivery_days(pipeline.delivery)}
-       write_json(receipt,{'state':'agent_running','resultState':result['state'],'agentBaseline':baseline})
-       agent_runner.run_codex(pipeline,prompt)
+       selected=agent_runner.settings(pipeline)
+       write_json(receipt,{'state':'agent_running','resultState':result['state'],'agentBaseline':baseline,'agentSettings':selected})
+       agent_runner.run_agent(pipeline,prompt,selected)
        current=agent_runner.verify_completion(pipeline,baseline)
-       write_json(receipt,{'state':'completed','resultState':current['state'],'agentRan':True})
+       write_json(receipt,{'state':'completed','resultState':current['state'],'agentRan':True,'agentSettings':selected})
       else:
        write_json(receipt,{'state':'completed' if result['complete'] else 'waiting','resultState':result['state']})
      except Exception as error:
-      write_json(receipt,{'state':'agent_failed' if baseline else 'failed','agentBaseline':baseline,'error':str(error)})
+      write_json(receipt,{'state':'agent_failed' if baseline else 'failed','agentBaseline':baseline,'agentSettings':selected,'error':str(error)})
      finally:
       run_lock.release()
     worker=threading.Thread(target=run,daemon=True)

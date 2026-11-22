@@ -1,11 +1,52 @@
-"""Run the installed Codex CLI for one Soundlog button action."""
+"""Run the configured local agent CLI for one Soundlog button action."""
 
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 
 from . import product_view
+from .store import write_json
+
+
+AGENTS = {'codex': 'Codex', 'claude': 'Claude Code', 'hermes': 'Hermes'}
+DEFAULT_SETTINGS = {'agent': 'codex', 'model': ''}
+
+
+def _executable(agent):
+    return shutil.which(agent) or shutil.which(str(Path.home()/'.local/bin'/agent))
+
+
+def _validate_settings(data):
+    if not isinstance(data, dict) or set(data) != {'agent', 'model'}:
+        raise ValueError('Agent 设置格式无效')
+    agent, model = data['agent'], data['model']
+    if not isinstance(agent, str) or agent not in AGENTS:
+        raise ValueError('请选择支持的 Agent')
+    if not isinstance(model, str) or (model and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/@+\[\]-]{0,127}', model)):
+        raise ValueError('请输入有效的模型 ID 或别名，留空则使用 Agent 默认模型')
+    return {'agent': agent, 'model': model}
+
+
+def settings(pipeline):
+    path = pipeline.home/'agent-settings.json'
+    return _validate_settings(json.loads(path.read_text())) if path.exists() else DEFAULT_SETTINGS.copy()
+
+
+def settings_view(pipeline):
+    return {**settings(pipeline), 'agents': [
+        {'id': agent, 'label': label, 'available': bool(_executable(agent))}
+        for agent, label in AGENTS.items()
+    ]}
+
+
+def save_settings(pipeline, data):
+    selected = _validate_settings(data)
+    if not _executable(selected['agent']):
+        raise ValueError(f'本机找不到 {AGENTS[selected["agent"]]} 命令')
+    write_json(pipeline.home/'agent-settings.json', selected)
+    return selected
 
 
 def pending_questions(pipeline):
@@ -15,19 +56,46 @@ def pending_questions(pipeline):
     )
 
 
-def run_codex(pipeline, prompt):
-    candidates = [shutil.which('codex'), Path.home() / '.local/bin/codex']
-    executable = next((path for item in candidates if item and (path := shutil.which(str(item)))), None)
+def _run_cli(pipeline, agent, args, prompt):
+    executable = _executable(agent)
+    label = AGENTS[agent]
     if executable is None:
-        raise RuntimeError('找不到本机 Codex CLI')
+        raise RuntimeError(f'找不到本机 {label} 命令')
 
     with (pipeline.home / 'agent-cli.log').open('ab') as log:
         result = subprocess.run(
-            [executable, '-a', 'never', 'exec', '--sandbox', 'workspace-write', '--json', '-'],
-            cwd=pipeline.root, input=prompt, text=True, stdout=log, stderr=subprocess.STDOUT,
+            [executable, *args], cwd=pipeline.root, input=prompt,
+            text=True, stdout=log, stderr=subprocess.STDOUT,
         )
     if result.returncode:
-        raise RuntimeError(f'Codex CLI 退出码 {result.returncode}。详见 agent-cli.log')
+        raise RuntimeError(f'{label} 退出码 {result.returncode}。详见 agent-cli.log')
+
+
+def run_codex(pipeline, prompt, model=''):
+    args = ['-a', 'never', 'exec', '--sandbox', 'workspace-write', '--json']
+    if model:
+        args.extend(['--model', model])
+    _run_cli(pipeline, 'codex', [*args, '-'], prompt)
+
+
+def run_agent(pipeline, prompt, selected):
+    agent, model = selected['agent'], selected['model']
+    if agent == 'codex':
+        return run_codex(pipeline, prompt, model) if model else run_codex(pipeline, prompt)
+    if agent == 'claude':
+        args = ['--print', '--input-format', 'text', '--permission-mode', 'acceptEdits',
+                '--allowedTools', ','.join(
+                    f'Bash(python3 scripts/{script}.py *)'
+                    for script in ('soundlog_pipeline', 'soundlog_features', 'soundlog_library')
+                )]
+    elif agent == 'hermes':
+        args = ['chat', '--query-file', '-', '--oneshot', '--format', 'stream-json',
+                '--toolsets', 'terminal,file']
+    else:
+        raise ValueError('请选择支持的 Agent')
+    if model:
+        args.extend(['--model', model])
+    _run_cli(pipeline, agent, args, prompt)
 
 
 def verify_completion(pipeline, prior_state):
