@@ -6,7 +6,7 @@ import mimetypes
 import re
 import secrets
 import threading
-from soundlog_memory import agent_runner, workbench_view
+from soundlog_memory import agent_runner, product_view, workbench_view
 from soundlog_memory.store import write_json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -278,10 +278,10 @@ def handler(root,token):
       if prompt:
        if baseline is None:
         baseline={'state':result['state'],'lastBundle':result.get('lastBundle'),
-                  'productVersion':agent_runner.product_version(pipeline)}
+                  'deliveryDays':product_view.delivery_days(pipeline.delivery)}
        write_json(receipt,{'state':'agent_running','resultState':result['state'],'agentBaseline':baseline})
        agent_runner.run_codex(pipeline,prompt)
-       current=agent_runner.verify_completion(pipeline,baseline,baseline['productVersion'])
+       current=agent_runner.verify_completion(pipeline,baseline)
        write_json(receipt,{'state':'completed','resultState':current['state'],'agentRan':True})
       else:
        write_json(receipt,{'state':'completed' if result['complete'] else 'waiting','resultState':result['state']})

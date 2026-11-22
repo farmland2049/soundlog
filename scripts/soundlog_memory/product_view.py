@@ -13,8 +13,20 @@ def _digest(value):
 
 
 def _fact_digest(fact):
-    # A fact's delivery bundle is a mutable storage pointer, not reviewed content.
-    return _digest({key:value for key,value in fact.items() if key!='deliveryBundle'})
+    # Keep evidence hashes independent of the delivery folder.
+    return _digest({key: value for key, value in fact.items() if key not in {'bundle', 'deliveryBundle'}})
+
+
+def delivery_days(delivery):
+    path = delivery/'catalog.json'
+    return json.loads(path.read_text())['days'] if path.exists() else {}
+
+
+def _reviewed_day(delivery, date, bundle):
+    if not (delivery/bundle/'receipt.json').is_file():
+        raise ValueError(f'{date} 缺少日交付回执')
+    review = workbench_view.artifact(delivery, f'{bundle}/{date}/daily-review.json')
+    return review.get('date') == date and review.get('mode') == 'agent_overview' and bool((review.get('overview') or '').strip())
 
 
 def publish(root, spec):
@@ -22,7 +34,8 @@ def publish(root, spec):
     facts = {f['id']: f for f in library(delivery)}
     if spec.get('schemaVersion') != 1 or not spec.get('reviewer'):
         raise ValueError('成果方案须有版本与审阅者')
-    seen = set(); bindings = {}
+    seen = set(); bindings = {}; covered_days = {}
+    catalog = delivery_days(delivery)
     for item in spec.get('activities', []):
         if not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', item['id']) or item['id'] in seen:
             raise ValueError('活动编号无效或重复')
@@ -32,6 +45,7 @@ def publish(root, spec):
         ids = item.get('factIds', [])
         if not ids or any(fid not in facts or facts[fid]['date'] != item['date'] for fid in ids):
             raise ValueError('活动须引用当日已交付内容')
+        covered_days[item['date']] = catalog[item['date']]
         if not item.get('title') or not item.get('summary'):
             raise ValueError('活动标题与总结不能为空')
         for section in ('minutes', 'decisions', 'actions', 'openItems'):
@@ -41,7 +55,12 @@ def publish(root, spec):
                 if section == 'actions' and any('actions' not in facts[fid]['selectedCategories'] for fid in row['factIds']):
                     raise ValueError('待办不能从非事项材料生成')
         for fid in ids: bindings[fid] = _fact_digest(facts[fid])
-    document = {'spec': spec, 'bindings': bindings}
+    # A reviewed day with no retained facts can be delivered without an activity.
+    fact_days = {fact['date'] for fact in facts.values()}
+    for date, bundle in catalog.items():
+        if date not in fact_days and _reviewed_day(delivery, date, bundle):
+            covered_days[date] = bundle
+    document = {'spec': spec, 'bindings': bindings, 'deliveryDays': covered_days}
     identifier = 'product-view-' + _digest(document)[:24]
     home = delivery/'product-views'; folder = home/identifier
     folder.mkdir(parents=True, exist_ok=True)
@@ -59,31 +78,42 @@ def _latest_view(pipeline):
     if not path.exists(): return None
     identifier = json.loads(path.read_text())['id']
     if not re.fullmatch(r'product-view-[a-f0-9]{24}', identifier): raise ValueError('成果路径无效')
+    folder = pipeline.delivery/'product-views'/identifier
+    if not (folder/'receipt.json').is_file():
+        raise ValueError('成果页缺少发布回执')
     return workbench_view.artifact(pipeline.delivery, 'product-views/'+identifier+'/view.json')
 
 
-def publish_reviewed_scenes(pipeline, bundle):
-    """Publish already reviewed scenes when a new day has no product view yet."""
+def missing_delivery_days(pipeline, expected):
+    document = _latest_view(pipeline)
+    covered = document.get('deliveryDays', {}) if document else {}
+    return {date: bundle for date, bundle in expected.items()
+            if covered.get(date) != bundle or not _reviewed_day(pipeline.delivery, date, bundle)}
+
+
+def publish_reviewed_scenes(pipeline, missing):
+    """Fill missing dates from reviewed scenes while preserving existing activities."""
     document = _latest_view(pipeline)
     spec = document['spec'] if document else {'schemaVersion': 1, 'reviewer': '复用已审阅的每日复盘场景'}
     activities = list(spec.get('activities', []))
-    catalog = json.loads((pipeline.delivery/'catalog.json').read_text())['days']
-    days = sorted(date for date, current in catalog.items() if current == bundle)
-    if not days or any(item['date'] in days for item in activities):
-        return None
+    activity_days = {item['date'] for item in activities}
     existing_ids = {item['id'] for item in activities}
-    for date in days:
+    for date, bundle in sorted(missing.items()):
         base = f'{bundle}/{date}'
-        review = workbench_view.artifact(pipeline.delivery, f'{base}/daily-review.json')
+        if not _reviewed_day(pipeline.delivery, date, bundle):
+            raise ValueError(f'{date} 缺少已审阅的每日复盘')
+        if date in activity_days:
+            if document is not None and 'deliveryDays' not in document:
+                # Legacy bindings have already been verified against the active bundle.
+                continue
+            raise ValueError(f'{date} 的交付包已更新，请重新发布该日成果页')
         scenes = workbench_view.artifact(pipeline.delivery, f'{base}/scenes.json')
-        if review.get('mode') != 'agent_overview' or not (review.get('overview') or '').strip():
-            return None
         if scenes['contentCards'] and not scenes['reviewedScenes']:
-            return None
+            raise ValueError(f'{date} 缺少可补发的审阅场景')
         for scene in scenes['reviewedScenes']:
             identifier = scene['id']
             if identifier in existing_ids:
-                return None
+                raise ValueError(f'{date} 的场景编号与已有成果重复')
             existing_ids.add(identifier)
             activities.append({
                 'id': identifier, 'kind': 'event', 'date': date,
@@ -91,14 +121,17 @@ def publish_reviewed_scenes(pipeline, bundle):
                 'minutes': [{'text': section['text'], 'factIds': section['factIds']}
                             for section in scene.get('sections', [])],
             })
-    return publish(pipeline.root, {**spec, 'activities': activities, 'reviewedSceneBundle': bundle})
+    return publish(pipeline.root, {**spec, 'activities': activities})
 
 
 def _activities(pipeline, facts):
     document = _latest_view(pipeline)
     if document is None: return []
     for fid, binding in document['bindings'].items():
-        if fid not in facts or _fact_digest(facts[fid]) != binding:
+        if fid not in facts:
+            raise ValueError('成果依据已有更新，请重新整理后查看')
+        digest = _fact_digest(facts[fid]) if 'deliveryDays' in document else _digest(facts[fid])
+        if digest != binding:
             raise ValueError('成果依据已有更新，请重新整理后查看')
     # Explicit allowlist: no transcript, offsets, source files, internal IDs or hashes.
     output = []
