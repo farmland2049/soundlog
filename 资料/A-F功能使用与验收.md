@@ -87,7 +87,7 @@ python3 scripts/soundlog_pipeline.py finish --spec 合并派生方案.json --lin
 
 `soundlog_integrations.py --help`列出memory-prepare、memory-apply、memory-confirm、memory-reconcile，action-draft、action-execute、action-revoke与identity。
 
-记忆写入先形成目标根、project、namespace和逐操作内容哈希的具体计划，获得相应操作批准，核对实时MCP项目及目标；apply不等于成功归档。必须真实MCP读回路径/标识/checksum并与磁盘比较后confirm。遇到中断先reconcile识别已写/未写/冲突，不覆盖未知文件。更正保留旧版本，撤回写状态墓碑，不让旧内容冒充当前；confirmed必须有用户确认依据。全部embed:false，不运行向量模型。正式范围仍仅限用户已授权的两日224篇试点，新增通用适配器验证使用独立合成库。
+记忆写入先形成目标根、project、namespace和逐操作内容哈希的具体计划，获得相应操作批准，核对实时MCP项目及目标；apply不等于成功归档。必须真实MCP读回路径/标识/checksum并与磁盘比较后confirm。遇到中断先reconcile识别已写/未写/冲突，不覆盖未知文件。更正保留旧版本，撤回写状态墓碑，不让旧内容冒充当前；confirmed必须有用户确认依据。全部embed:false，不运行向量模型。正式记录包括此前授权的两日试点、本次精选归档及后续经用户授权的日常记录批次。实际范围以项目状态及对应写入回执为准。
 
 日历草稿需具体日历、标题、带时区的起止时间和来源。具体事件授权与计划哈希绑定，真实应用还需显式`--allow-live`；失败回执不称成功。确定标记和应用读回防止重试重复，撤销另有授权及应用核验。本次用户授权的测试已经完成创建、读回、重试和撤销，空测试日历保留；没有留下测试事件。
 
