@@ -34,3 +34,6 @@ dialog{width:min(580px,92vw);border:1px solid #dce3d7;border-radius:16px;padding
 }
 .settings-status { font-size: 13px; line-height: 1.6; }
 .settings-buttons button:disabled { opacity: .55; cursor: default; }
+.record-details { margin: 12px 0 20px; color: #365e45; }
+.record-details summary { cursor: pointer; }
+.record-details iframe { display: block; width: 100%; min-height: 320px; margin-top: 8px; border: 1px solid #dce3d7; border-radius: 8px; }

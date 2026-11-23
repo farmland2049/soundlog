@@ -8,9 +8,63 @@ const append=(p,...cs)=>{for(const c of cs)if(c)p.append(c);return p};
 const section=(title,rows)=>{if(!rows?.length)return null;const s=el('section',undefined,'section'),ul=el('ul');s.append(el('h3',title));for(const row of rows){const item=el('li',typeof row==='string'?row:row.text);if(row.owner||row.due)item.append(el('span',[row.owner,row.due].filter(Boolean).join(' · '),'owner'));ul.append(item)}return append(s,ul)};
 function activity(a,taskOnly=false){const card=el('article',undefined,'activity');append(card,append(el('div',undefined,'meta'),el('span',({meeting:'会议',conversation:'交谈',event:'事件'})[a.kind],'badge '+a.kind),el('span',a.time)),el('h2',a.title));if(!taskOnly){append(card,el('p',a.summary,'summary'),section(a.kind==='meeting'?'会议纪要':'内容要点',a.minutes),section('结论与方向',a.decisions))}const cols=el('div',undefined,'columns');append(cols,section('待办清单',a.actions),section('开口项',a.openItems));if(cols.children.length)card.append(cols);return card}
 function matches(x,q){return !q||JSON.stringify(x).toLowerCase().includes(q.toLowerCase())}
+function documentDetails(title,path){
+ const details=append(el('details',undefined,'record-details'),el('summary',title));
+ details.addEventListener('toggle',()=>{
+  if(!details.open||details.querySelector('iframe'))return;
+  const frame=el('iframe');
+  frame.title=title;
+  frame.src=base+'/files/'+path.split('/').map(encodeURIComponent).join('/');
+  details.append(frame);
+ });
+ return details;
+}
+const archiveLabels={pending:'待准备归档',draft_ready:'待归档',archived:'已归档到 Basic Memory',
+ needs_update:'交付已更新 · 待重新归档',draft_error:'归档草稿准备失败',verification_failed:'归档核验失败'};
+function appendDay(date,q){
+ const rows=data.activities.filter(item=>item.date===date.date&&matches(item,q)&&
+  (view==='all'||(view==='actions'?(item.actions.length||item.openItems.length):item.kind===view)));
+ const personal=(data.personal||[]).filter(item=>item.date===date.date&&matches(item,q)&&
+  (view==='conversation'?item.kind==='expression':view==='actions'&&item.kind!=='expression'));
+ const showDay=view==='all'&&matches(date.summary,q);
+ const showMinutes=view==='meeting'&&date.minutes&&(!q||rows.length);
+ if(!rows.length&&!personal.length&&!showDay&&!showMinutes)return;
+ out.append(el('h2',date.date.replaceAll('-',' / '),'day-heading'));
+ if(view==='all'){
+  const archive=date.archive||{};
+  const dayCard=append(el('article',undefined,'activity'),el('p',archiveLabels[archive.state]||'待准备归档','badge'));
+  if(date.summary)dayCard.append(el('p',date.summary,'summary'));
+  if(date.reviewDocument)dayCard.append(documentDetails('查看每日复盘',date.reviewDocument));
+  if(archive.draft&&archive.state!=='archived')dayCard.append(documentDetails('查看归档草稿',archive.draft));
+  out.append(dayCard);
+ }
+ if(showMinutes)out.append(documentDetails('查看当天完整纪要及依据',date.minutes));
+ for(const item of personal){
+  const label={expression:'本人表达',commitment:'本人当时的承诺',request_to_me:'当时交给我的请求'}[item.kind];
+  const card=append(el('article',undefined,'activity'),el('span',label,'badge'),el('p',item.summary,'summary'));
+  if(item.kind!=='expression')card.append(el('p','当前是否完成仍待核实。','quiet'));
+  out.append(card);
+ }
+ for(const item of rows)out.append(activity(item,view==='actions'));
+}
+
+function renderFollowups(date,q){
+ const items=(data.followups||[]).filter(item=>(!date||item.timeline.some(row=>row.date===date))&&matches(item,q));
+ if(!items.length)return;
+ const details=append(el('details',undefined,'activity'),el('summary','跨天跟进线索（'+items.length+'）'));
+ for(const item of items){
+  append(details,el('h3',item.label),el('p',item.reason,'quiet'),section('录音时间线',
+   item.timeline.map(row=>row.date+' · '+row.summary)));
+ }
+ details.append(el('p','这些是历史线索，当前状态仍待核实。','quiet'));
+ out.append(details);
+}
 function render(){if(!data)return;view=names[location.hash.slice(1)]?location.hash.slice(1):'all';document.querySelector('#title').textContent=names[view];document.querySelector('#description').textContent=descriptions[view];document.querySelector('#filters').hidden=['knowledge','writing','reviews','history'].includes(view);for(const b of document.querySelectorAll('[data-view]')){b.classList.toggle('active',b.dataset.view===view);b.setAttribute('aria-current',b.dataset.view===view?'page':'false')}out.replaceChildren();const date=document.querySelector('#date').value,q=document.querySelector('#search').value.trim();
  if(view==='history'){showHistory();return}
- if(['all','meeting','conversation','event','actions'].includes(view)){const rows=data.activities.filter(a=>(!date||a.date===date)&&matches(a,q)&&(view==='all'||view==='actions'?(view!=='actions'||a.actions.length||a.openItems.length):a.kind===view));let last='';for(const a of rows){if(a.date!==last){out.append(el('h2',a.date.replaceAll('-',' / '),'day-heading'));last=a.date}out.append(activity(a,view==='actions'))}}
+ if(['all','meeting','conversation','event','actions'].includes(view)){
+  if(view==='actions')renderFollowups(date,q);
+  for(const day of data.days)if(!date||day.date===date)appendDay(day,q);
+ }
  else if(view==='knowledge'){const grid=el('div',undefined,'knowledge-grid');for(const k of data.knowledge){const c=append(el('article',undefined,'activity'),el('span',k.audience==='child'?'儿童学习':'成人学习与讨论','badge'),el('h2',k.title));for(const[key,label]of [['concepts','重点'],['methods','方法'],['examples','例子'],['questions','思考问题']])append(c,section(label,k[key]));if(k.sprouts?.length){const d=append(el('details'),el('summary','延伸思考'));append(d,section('可以继续想想',k.sprouts));c.append(d)}grid.append(c)}out.append(grid)}
  else if(view==='writing'){for(const w of data.writing){const c=append(el('article',undefined,'activity'),el('span','写作提纲','badge'),el('h2',w.title));for(const s of w.sections)append(c,section(s.title,s.texts));out.append(c)}}
  else if(view==='reviews'){for(const r of data.reviews.filter(x=>x.updated)){const c=append(el('article',undefined,'activity'),el('h2',r.start+' — '+r.end));for(const s of r.sections)append(c,section(s.title,[s.text]));if(r.missingDays.length)c.append(el('p','缺少记录的日期：'+r.missingDays.join('、'),'quiet'));out.append(c)}}

@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from .library_tools import library
 from .store import write_json
-from . import workbench_view
+from . import daily_archive, personal_items, workbench_view
 
 
 def _digest(value):
@@ -147,6 +147,28 @@ def _activities(pipeline, facts):
     return output
 
 
+def _followups(delivery, facts):
+    path = delivery/'task-graph.json'
+    if not path.exists():
+        return []
+    graph = json.loads(path.read_text())
+    mentioned = {entry['factId']: entry for task in graph['tasks'] for entry in task['timeline']
+                 if entry['factId'] in facts and entry['bundle'] == facts[entry['factId']]['bundle']}
+    labels = {'same_task': '审阅为同一事项', 'possible_same_task': '可能相关', 'contradicts': '说法有冲突'}
+    followups = []
+    revoked = {link.get('target') for link in graph['links'] if link['relation'] == 'revoke'}
+    for link in graph['links']:
+        if link['relation'] not in labels or link['id'] in revoked:
+            continue
+        entries = [mentioned.get(link[k]) for k in ('from', 'to')]
+        if not all(entries):
+            continue
+        timeline = sorted(entries, key=lambda entry: entry['recordedStart'])
+        followups.append({'label': labels[link['relation']], 'reason': link['reason'],
+                          'timeline': [{key: entry[key] for key in ('date', 'summary')} for entry in timeline]})
+    return sorted(followups, key=lambda item: item['timeline'][-1]['date'], reverse=True)
+
+
 def results(pipeline):
     catalog_path = pipeline.delivery/'catalog.json'
     catalog = json.loads(catalog_path.read_text()) if catalog_path.exists() else {'days':{}}
@@ -154,9 +176,13 @@ def results(pipeline):
     activities = _activities(pipeline, facts)
     curated = {a['date'] for a in activities}
     days = []
+    archives = daily_archive.statuses(pipeline, catalog['days'])
+    meeting_dates = {fact['date'] for fact in facts.values() if 'minutes' in fact.get('selectedCategories', [])}
     for date, bundle in sorted(catalog['days'].items(), reverse=True):
         review = workbench_view.artifact(pipeline.delivery, bundle+'/'+date+'/daily-review.json')
-        days.append({'date':date, 'summary':review.get('overview') or ''})
+        days.append({'date':date, 'summary':review.get('overview') or '', 'archive':archives[date],
+                     'reviewDocument':f'{bundle}/{date}/daily-review.md',
+                     'minutes':f'{bundle}/{date}/minutes.md' if date in meeting_dates else None})
         if date in curated: continue
         scenes = workbench_view.artifact(pipeline.delivery, bundle+'/'+date+'/scenes.json')['reviewedScenes']
         for scene in scenes:
@@ -173,4 +199,11 @@ def results(pipeline):
     writing = [{'title':p['title'], 'sections':[{'title':s['title'], 'texts':[facts[fid]['summary'] for fid in s['factIds'] if fid in facts]} for s in p['sections']]} for p in derived['writingPlans']]
     reviews = [{'start':r['start'], 'end':r['end'], 'missingDays':r['missingDays'],
                 'updated':not r['needsRefresh'], 'sections':[{'title':s['title'],'text':s['text']} for s in r['sections']]} for r in workbench_view.reviews(pipeline.delivery)] if catalog['days'] else []
-    return {'days':days, 'activities':sorted(activities, key=lambda a:(a['date'],a['time']), reverse=True), 'knowledge':knowledge, 'writing':writing, 'reviews':reviews}
+    try:
+        personal = [{'kind':item['kind'], 'summary':item['summary'], 'date':item['recordedStart'][:10]}
+                    for item in personal_items.view(pipeline.root)['items']]
+    except (OSError, ValueError, KeyError, TypeError):
+        personal = []
+    return {'days':days, 'activities':sorted(activities, key=lambda a:(a['date'],a['time']), reverse=True),
+            'knowledge':knowledge, 'writing':writing, 'reviews':reviews, 'personal':personal,
+            'followups':_followups(pipeline.delivery,facts)}

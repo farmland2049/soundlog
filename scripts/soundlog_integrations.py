@@ -19,11 +19,16 @@ def main():
  a=sub.add_parser('identity');a.add_argument('--operation',type=Path,required=True);a.add_argument('--approval',type=Path,required=True)
  a=p.parse_args();home=a.root/'记忆库/运行/产品功能'
  try:
-  with Pipeline(a.root).lock():
+  pipeline=Pipeline(a.root)
+  with pipeline.lock():
    if a.command=='memory-prepare':
     result=memory_exchange.prepare(a.target,a.project,load(a.records),load(a.managed) if a.managed else None);write_json(a.output,result);result={'state':'prepared_not_written','plan':str(a.output),'sha256':memory_exchange.checksum(result),'operations':len(result['operations'])}
    elif a.command=='memory-apply':result=memory_exchange.apply(load(a.plan),load(a.approval),load(a.preflight),a.receipt)
-   elif a.command=='memory-confirm':result=memory_exchange.confirm(load(a.receipt),load(a.metadata));write_json(a.output,result)
+   elif a.command=='memory-confirm':
+    from soundlog_memory import daily_archive
+    result=memory_exchange.confirm(load(a.receipt),load(a.metadata))
+    write_json(a.output,result)
+    daily_archive.remember_verified(pipeline,result)
    elif a.command=='memory-reconcile':result=memory_exchange.reconcile(load(a.plan),load(a.receipt))
    elif a.command=='action-draft':result=action_outbox.draft(home,load(a.file))
    elif a.command=='action-execute':result=action_outbox.execute(home,a.id,load(a.approval),allow_live=a.allow_live)

@@ -263,6 +263,12 @@ class Pipeline:
             self.save({'schemaVersion': 1, 'state': 'idle' if adopt else 'awaiting_enrichment',
                        'dayHashes': hashes or state.get('dayHashes', {}), 'lastBundle': dest.name,
                        'resultId':rid})
+            from . import daily_archive
+            try:
+                daily_archive.prepare(self, {day: dest.name for day in days})
+            except (OSError, ValueError):
+                import logging
+                logging.exception('日交付已完成，日常归档草稿写入失败')
             return result
 
     def finish_products(self, spec, links):
