@@ -6,7 +6,8 @@ import mimetypes
 import re
 import secrets
 import threading
-from soundlog_memory import agent_runner, product_view, workbench_view
+import time
+from soundlog_memory import agent_runner, mount_trigger, product_view, workbench_view
 from soundlog_memory.store import write_json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -76,6 +77,106 @@ def agent_handoff_prompt(pipeline, current, pending_questions, *, verify_publica
 def handler(root,token):
  root=Path(root).resolve(); pipeline=Pipeline(root);prefix='/'+token
  run_lock=threading.Lock()
+ stop=threading.Event()
+ last_access=time.monotonic()
+
+ def pending_wakes():
+  folder=pipeline.home/'mount-wakes'
+  active=None
+  mounted={}
+  requests=[]
+  for path in folder.glob('*.json'):
+   if not re.fullmatch(r'[a-f0-9]{32}\.json',path.name) or path.is_symlink():
+    continue
+   requests.append(path)
+   try:
+    sources=json.loads(path.read_text())['sources']
+    if active is None:
+     active=mount_trigger.mounted_sources(root)
+    for name,identity in sources.items():
+     if active.get(name) is not None and active[name]==tuple(identity):
+      mounted[name]=active[name]
+   except (OSError, ValueError, KeyError, TypeError, AttributeError):
+    continue
+  return mounted,requests
+
+ def start_run(*, wake=False):
+  if not run_lock.acquire(blocking=False):
+   return 'already_running'
+  mounted=None
+  requests=[]
+  if wake:
+   try:
+    mounted,requests=pending_wakes()
+    if not mounted:
+     for path in requests:path.unlink(missing_ok=True)
+     run_lock.release()
+     return 'no_pending_wake'
+   except BaseException:
+    run_lock.release()
+    raise
+  receipt=pipeline.home/'manual-run.json'
+  trigger='external_storage' if mounted is not None else 'manual'
+  run_id=secrets.token_hex(8)
+
+  def record(**status):
+   write_json(receipt,{'trigger':trigger,'runId':run_id,**status})
+
+  def run():
+   baseline=None
+   selected=None
+   try:
+    previous=json.loads(receipt.read_text()) if receipt.exists() else {}
+    baseline=previous.get('agentBaseline')
+    record(state='running',agentBaseline=baseline)
+    for path in requests:path.unlink(missing_ok=True)
+    from soundlog_memory.audio_sources import collect
+    if mounted is None:
+     with pipeline.lock():collect(root)
+    else:
+     copied=0
+     while True:
+      with pipeline.lock():
+       active=mount_trigger.mounted_sources(root)
+       directories=[path for path,identity in mounted.items() if active.get(path)==identity]
+       imports=collect(root,mounted_directories=directories) if directories else {}
+      copied+=imports.get('copied',0)
+      if not imports.get('waiting'):
+       break
+      record(state='running',resultState='waiting_for_mounted_audio',agentBaseline=baseline)
+      if stop.wait(10):
+       return
+     if not copied and not baseline and not pipeline.inventory() and pipeline.state()['state']=='idle':
+      record(state='completed',resultState='idle')
+      return
+     record(state='running',agentBaseline=baseline)
+    result=pipeline.start()
+    prompt=agent_handoff_prompt(
+     pipeline,result,len(result['pendingQuestions']),verify_publication=bool(baseline)
+    )
+    if prompt:
+     if baseline is None:
+      baseline={'state':result['state'],'lastBundle':result.get('lastBundle'),
+                'deliveryDays':product_view.delivery_days(pipeline.delivery)}
+     selected=agent_runner.settings(pipeline)
+     record(state='agent_running',resultState=result['state'],agentBaseline=baseline,agentSettings=selected)
+     agent_runner.run_agent(pipeline,prompt,selected)
+     current=agent_runner.verify_completion(pipeline,baseline)
+     record(state='completed',resultState=current['state'],agentRan=True,agentSettings=selected)
+    else:
+     record(state='completed' if result['complete'] else 'waiting',resultState=result['state'])
+   except Exception as error:
+    record(state='agent_failed' if baseline else 'failed',agentBaseline=baseline,agentSettings=selected,error=str(error))
+   finally:
+    run_lock.release()
+
+  try:
+   threading.Thread(target=run,daemon=True).start()
+  except RuntimeError:
+   run_lock.release()
+   raise
+  return 'started'
+
  class Handler(BaseHTTPRequestHandler):
   def log_message(self,*args):pass
   def allowed(self):
@@ -83,7 +184,12 @@ def handler(root,token):
    expected={f'127.0.0.1:{port}',f'localhost:{port}'}
    if host not in expected:return False
    origin=self.headers.get('Origin')
-   return not origin or origin in {'http://'+x for x in expected}
+   if origin and origin not in {'http://'+x for x in expected}:return False
+   path=urlsplit(self.path).path
+   if path==prefix or path.startswith(prefix+'/'):
+    nonlocal last_access
+    last_access=time.monotonic()
+   return True
   def reply(self,code,data,kind='application/json; charset=utf-8'):
    body=data if isinstance(data,bytes) else json.dumps(data,ensure_ascii=False).encode()
    self.send_response(code);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(body)))
@@ -150,7 +256,14 @@ def handler(root,token):
      if running:
       state='running'
       agent=agent_runner.AGENTS.get((status.get('agentSettings') or {}).get('agent'),'Agent')
-      message=f'{agent} 正在整理并发布成果…' if status.get('state')=='agent_running' else '正在导入或转写录音…'
+      if status.get('state')=='agent_running':
+       message=f'{agent} 正在整理并发布成果…'
+      elif status.get('resultState')=='waiting_for_mounted_audio':
+       message='已连接录音存储，正在等文件写入完成…'
+      elif status.get('trigger')=='external_storage':
+       message='已连接录音存储，正在自动导入或转写…'
+      else:
+       message='正在导入或转写录音…'
      elif status.get('state')=='agent_failed':
       state='agent_failed';message='Agent 整理未完成，进度已保留。点击「开始处理录音」重试。'
      elif status.get('state')=='failed':state='failed';message='音频处理失败，文件已保留。可查看处理历史后重试。'
@@ -159,7 +272,10 @@ def handler(root,token):
      elif status.get('state')=='completed' and phase=='idle' and not pipeline.inventory():
       state='completed';message='录音整理和成果检查已完成。' if status.get('agentRan') else '检查完成，当前没有待处理录音。'
      else:state='idle';message=''
-     self.reply(200,{'state':state,'message':message,'agentPrompt':prompt});return
+     self.reply(200,{'state':state,'message':message,'agentPrompt':prompt,
+                     'trigger':status.get('trigger'),'resultState':status.get('resultState'),
+                     'runId':status.get('runId'),
+                     'mountWake':not running and bool(pending_wakes()[0])});return
     if path==prefix+'/api/workbench':self.reply(200,workbench_view.overview(pipeline));return
     if path==prefix+'/api/day':self.reply(200,workbench_view.day_view(pipeline,parse_qs(url.query).get('date',[''])[0]));return
     if path==prefix+'/api/tasks':
@@ -271,42 +387,8 @@ def handler(root,token):
     except (OSError,ValueError,KeyError,TypeError) as error:self.reply(400,{'error':str(error)})
     return
    if urlsplit(self.path).path==prefix+'/api/run':
-    if not run_lock.acquire(blocking=False):self.reply(202,{'state':'already_running'});return
-    receipt=pipeline.home/'manual-run.json'
-    def run():
-     baseline=None
-     selected=None
-     try:
-      previous=json.loads(receipt.read_text()) if receipt.exists() else {}
-      baseline=previous.get('agentBaseline')
-      write_json(receipt,{'state':'running','agentBaseline':baseline})
-      from soundlog_memory.audio_sources import collect
-      with pipeline.lock():collect(root)
-      result=pipeline.start()
-      prompt=agent_handoff_prompt(
-       pipeline,result,len(result['pendingQuestions']),verify_publication=bool(baseline)
-      )
-      if prompt:
-       if baseline is None:
-        baseline={'state':result['state'],'lastBundle':result.get('lastBundle'),
-                  'deliveryDays':product_view.delivery_days(pipeline.delivery)}
-       selected=agent_runner.settings(pipeline)
-       write_json(receipt,{'state':'agent_running','resultState':result['state'],'agentBaseline':baseline,'agentSettings':selected})
-       agent_runner.run_agent(pipeline,prompt,selected)
-       current=agent_runner.verify_completion(pipeline,baseline)
-       write_json(receipt,{'state':'completed','resultState':current['state'],'agentRan':True,'agentSettings':selected})
-      else:
-       write_json(receipt,{'state':'completed' if result['complete'] else 'waiting','resultState':result['state']})
-     except Exception as error:
-      write_json(receipt,{'state':'agent_failed' if baseline else 'failed','agentBaseline':baseline,'agentSettings':selected,'error':str(error)})
-     finally:
-      run_lock.release()
-    worker=threading.Thread(target=run,daemon=True)
-    try:worker.start()
-    except RuntimeError:
-     run_lock.release()
-     raise
-    self.reply(202,{'state':'started'});return
+    wake=parse_qs(urlsplit(self.path).query).get('trigger')==['mount']
+    self.reply(202,{'state':start_run(wake=wake)});return
    if urlsplit(self.path).path!=prefix+'/api/questions':self.send_error(404);return
    try:
     length=int(self.headers.get('Content-Length','0'))
@@ -319,6 +401,18 @@ def handler(root,token):
     with pipeline.lock():result=ask(pipeline.delivery,pipeline.home,question,queries,snapshot,project_root=root)
     self.reply(201,result)
    except (OSError,ValueError,KeyError,TypeError) as e:self.reply(400,{'error':str(e)})
+ def stop_after_idle(server):
+  while not stop.wait(5):
+   if time.monotonic()-last_access<90 or not run_lock.acquire(blocking=False):
+    continue
+   try:
+    if time.monotonic()-last_access>=90:
+     server.shutdown()
+     return
+   finally:
+    run_lock.release()
+ Handler.stop_after_idle=staticmethod(stop_after_idle)
+ Handler.stop=staticmethod(stop.set)
  return Handler
 
 
@@ -330,11 +424,15 @@ def main():
   parsed=urlsplit(json.loads(previous.read_text())['url']);candidate=parsed.path.strip('/')
   if parsed.hostname!='127.0.0.1' or not re.fullmatch(r'[A-Za-z0-9_-]{24,}',candidate):raise ValueError('旧会话地址无效')
   token=candidate;a.port=a.port or parsed.port
- server=ThreadingHTTPServer(('127.0.0.1',a.port),handler(a.root,token))
+ request_handler=handler(a.root,token)
+ server=ThreadingHTTPServer(('127.0.0.1',a.port),request_handler)
  runtime=a.root/'记忆库/运行/自动管线';runtime.mkdir(parents=True,exist_ok=True)
  url=f'http://127.0.0.1:{server.server_port}/{token}/'
  (runtime/'hub.json').write_text(json.dumps({'url':url,'pid':__import__('os').getpid()}));print(url,flush=True)
+ threading.Thread(target=request_handler.stop_after_idle,args=(server,),daemon=True).start()
  try:server.serve_forever()
  except KeyboardInterrupt:pass
- finally:server.server_close()
+ finally:
+  request_handler.stop()
+  server.server_close()
 if __name__=='__main__':main()

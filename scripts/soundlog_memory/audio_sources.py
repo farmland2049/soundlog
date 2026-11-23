@@ -7,12 +7,18 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import stat
 import tempfile
 import time
 from zoneinfo import ZoneInfo
 from .store import write_json
 
 AUDIO = {'.mp3', '.wav', '.m4a', '.aac', '.flac'}
+STABLE_SECONDS = 60
+
+
+class RecordingNotReady(ValueError):
+    """The collector can retry the file once it has stopped changing."""
 
 def home(root): return Path(root)/'记忆库/运行/自动管线'
 
@@ -22,7 +28,10 @@ def settings(root):
 
 
 def save_settings(root, data):
-    if set(data)!={'voiceMemos','directories'} or type(data['voiceMemos']) is not bool or not isinstance(data['directories'],list) or len(data['directories'])>30:
+    required={'voiceMemos','directories'}
+    if (not isinstance(data,dict) or not required <= data.keys() or data.keys()-required-{'autoProcessOnMount'}
+            or type(data['voiceMemos']) is not bool or not isinstance(data['directories'],list)
+            or len(data['directories'])>30 or type(data.get('autoProcessOnMount',False)) is not bool):
         raise ValueError('来源设置格式无效，最多添加30个目录')
     directories=[];project=Path(root).resolve()
     for value in data['directories']:
@@ -33,6 +42,12 @@ def save_settings(root, data):
         value=str(p)
         if value not in directories: directories.append(value)
     result={'voiceMemos':data['voiceMemos'],'directories':directories}
+    if 'autoProcessOnMount' in data:
+        result['autoProcessOnMount']=data['autoProcessOnMount']
+    else:
+        previous=settings(root)
+        if 'autoProcessOnMount' in previous:
+            result['autoProcessOnMount']=previous['autoProcessOnMount']
     write_json(home(root)/'audio-sources.json',result);return result
 
 
@@ -95,7 +110,8 @@ def sha(path):
 def copy_recording(root, item, seen):
     source=Path(item['source']);before=source.stat()
     if source.is_symlink() or not source.is_file():raise ValueError('源文件不是普通文件或为符号链接')
-    if before.st_size==0 or time.time()-before.st_mtime<60:raise ValueError('文件为空或仍在写入，稍后再试')
+    if time.time()-before.st_mtime<STABLE_SECONDS:raise RecordingNotReady('文件仍在写入，稍后再试')
+    if before.st_size==0:raise ValueError('源文件为空')
     inbox=Path(root)/'录音/待处理';archive=Path(root)/'录音/已归档';inbox.mkdir(parents=True,exist_ok=True)
     name=item['stamp']+source.suffix.lower();dest=inbox/name
     # A hidden temporary file is never visible to the audio scanner.
@@ -105,7 +121,7 @@ def copy_recording(root, item, seen):
         with os.fdopen(fd,'wb') as out,source.open('rb') as inp:
             for block in iter(lambda:inp.read(1024*1024),b''):digest.update(block);out.write(block)
         after=source.stat()
-        if (before.st_size,before.st_mtime_ns,before.st_ino)!=(after.st_size,after.st_mtime_ns,after.st_ino):raise ValueError('复制过程中源文件发生变化，稍后重试')
+        if (before.st_size,before.st_mtime_ns,before.st_ino)!=(after.st_size,after.st_mtime_ns,after.st_ino):raise RecordingNotReady('复制过程中源文件发生变化，稍后重试')
         digest=digest.hexdigest()
         prior=seen.get(digest)
         if prior and any((p/prior).is_file() and not (p/prior).is_symlink() and sha(p/prior)==digest for p in (inbox,archive)):
@@ -122,12 +138,16 @@ def copy_recording(root, item, seen):
     finally:temp.unlink(missing_ok=True)
 
 
-def collect(root, *, memo_directory=None, today=None):
+def collect(root, *, memo_directory=None, today=None, mounted_directories=None):
     root=Path(root);config=settings(root);today=today or datetime.now(ZoneInfo('Asia/Shanghai')).date()
     memo_directory=memo_directory or Path.home()/'Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings'
     jobs=[]
-    if config['voiceMemos']:jobs.append(('voiceMemos',voice_memos,(memo_directory,today)))
-    jobs.extend((p,directory_files,(p,)) for p in config['directories'])
+    if mounted_directories is None and config['voiceMemos']:
+        jobs.append(('voiceMemos',voice_memos,(memo_directory,today)))
+    directories=config['directories'] if mounted_directories is None else [
+        p for p in config['directories'] if p in mounted_directories
+    ]
+    jobs.extend((p,directory_files,(p,)) for p in directories)
     notes=[];candidates=[]
     # Independent read-only discovery runs in parallel; copying is serialized to arbitrate collisions.
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -138,11 +158,29 @@ def collect(root, *, memo_directory=None, today=None):
             except (OSError,ValueError,sqlite3.Error) as error:notes.append({'source':label,'reason':str(error)})
     ledger=home(root)/'audio-import-ledger.json'
     seen=json.loads(ledger.read_text()) if ledger.exists() else {}
-    outcomes=[]
+    outcomes=[];waiting=[]
+    if mounted_directories is not None:
+        cutoff=time.time()-STABLE_SECONDS
+        for item in candidates:
+            source=Path(item['source'])
+            try:
+                info=source.lstat()
+            except OSError:
+                continue
+            if stat.S_ISREG(info.st_mode) and info.st_mtime>cutoff:
+                waiting.append(item['source'])
+        if waiting:
+            notes.extend({'source':source,'reason':'文件仍在写入，稍后再试'} for source in waiting)
+            candidates=[]
     for item in candidates:
         try:outcomes.append({**item,**copy_recording(root,item,seen)})
+        except RecordingNotReady as error:
+            waiting.append(item['source'])
+            notes.append({'source':item['source'],'reason':str(error)})
         except (OSError,ValueError) as error:notes.append({'source':item['source'],'reason':str(error)})
     write_json(ledger,seen)
     receipt={'date':today.isoformat(),'copied':sum(x['decision']=='copied' for x in outcomes),'duplicates':sum(x['decision']=='duplicate' for x in outcomes),'skipped':len(notes),'outcomes':outcomes,'notes':notes}
+    if waiting:
+        receipt['waiting']=waiting
     write_json(home(root)/'audio-import-receipt.json',receipt)
     return receipt

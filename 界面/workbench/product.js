@@ -32,6 +32,9 @@ const agentPrompt=document.querySelector('#agent-prompt');
 const agentCopyStatus=document.querySelector('#agent-copy-status');
 let runTimer=null;
 let latestAgentPrompt='';
+let lastRunStatus='';
+const desktopWindow=new URLSearchParams(location.search).get('desktop')==='1';
+let startingRun=false;
 
 function updateProgress(progress){
  if(!progress)return;
@@ -48,6 +51,9 @@ function progressFor(status, pipeline){
  const make=(step,percent,label,state)=>({step,total,percent,label,state});
  const phaseState=['failed','agent_failed'].includes(status.state)?'failed':status.state==='running'?'running':'waiting';
  if(status.state==='completed')return make(6,100,'处理与成果核验完成','completed');
+ if(status.resultState==='waiting_for_mounted_audio'&&status.state==='running'){
+  return make(1,8,'等待外部录音写入完成','waiting');
+ }
  if(status.state==='waiting')return make(1,5,'等待录音文件稳定','waiting');
  if(status.state==='running'&&manual==='running'){
   return phase==='processing_audio'?make(2,25,'转写与声音分析','running'):make(1,8,'检查录音来源','running');
@@ -79,25 +85,43 @@ document.querySelector('#copy-agent-prompt').onclick=async()=>{
   agentCopyStatus.textContent='已选中提示词，请按 ⌘C（Windows 为 Ctrl+C）复制。';
  }
 };
-async function checkRun(){
+async function checkRun(force=false){
+ clearTimeout(runTimer);
  try{
   const r=await fetch(base+'/api/run-status',{cache:'no-store'});if(!r.ok)throw Error('读取失败');const s=await r.json();
+  if(desktopWindow&&s.mountWake&&!startingRun){
+   await startProcessing('mount');
+   return;
+  }
+  const statusKey=JSON.stringify(s);
+  if(!force&&s.state!=='running'&&statusKey===lastRunStatus)return;
+  lastRunStatus=statusKey;
   let pipeline=null;
   try{const p=await fetch(base+'/api/workbench',{cache:'no-store'});if(p.ok)pipeline=(await p.json()).pipeline}catch{}
   latestAgentPrompt=s.agentPrompt||'';
   updateProgress(progressFor(s,pipeline));
   agentHandoff.hidden=s.state!=='agent_failed'||!latestAgentPrompt;
   runStatus.textContent=s.message;startRun.disabled=s.state==='running';startRun.textContent=s.state==='running'?'正在处理…':'开始处理录音';
-  if(s.state==='running'){clearTimeout(runTimer);runTimer=setTimeout(checkRun,3000)}else{clearTimeout(runTimer);await load()}
- }catch{agentHandoff.hidden=true;runStatus.textContent='连接中断，请刷新后查看。';startRun.disabled=false;await load()}
+  if(s.state!=='running')await load();
+ }catch{lastRunStatus='';agentHandoff.hidden=true;runStatus.textContent='连接中断，请刷新后查看。';startRun.disabled=false;if(force||!data)await load()}
+ finally{clearTimeout(runTimer);runTimer=setTimeout(checkRun,3000)}
 }
-startRun.onclick=async()=>{
+async function startProcessing(trigger='manual'){
+ if(startingRun)return;
+ startingRun=true;
  startRun.disabled=true;agentHandoff.hidden=true;runStatus.textContent='正在检查录音…';
  updateProgress({step:1,total:6,percent:5,label:'检查录音来源',state:'running'});
- try{const r=await fetch(base+'/api/run',{method:'POST'});if(!r.ok)throw Error('启动失败');await checkRun()}
+ try{
+  const path=trigger==='mount'?'/api/run?trigger=mount':'/api/run';
+  const r=await fetch(base+path,{method:'POST'});
+  if(!r.ok)throw Error('启动失败');
+  await checkRun(true);
+ }
  catch{runStatus.textContent='暂时无法启动，请重试。';startRun.disabled=false}
-};
-document.querySelector('#refresh').onclick=checkRun;
+ finally{startingRun=false}
+}
+startRun.onclick=()=>startProcessing();
+document.querySelector('#refresh').onclick=()=>checkRun(true);
 checkRun();
 
 const settingsDialog=document.querySelector('#settings-dialog'),settingsStatus=document.querySelector('#settings-status');
@@ -167,13 +191,13 @@ agentForm.onsubmit=async event=>{
 document.querySelector('#open-settings').onclick=async()=>{
  settingsStatus.textContent='';settingsDialog.showModal();
  loadAgentSettings();
- try{const r=await fetch(base+'/api/audio-sources');if(!r.ok)throw Error('读取失败');const s=await r.json();document.querySelector('#sources-form button[type="submit"]').disabled=false;document.querySelector('#source-memos').checked=s.voiceMemos;document.querySelector('#source-directories').value=s.directories.join('\n');const history=await fetch(base+'/api/audio-imports');if(history.ok){const last=await history.json();if(last.date)settingsStatus.textContent='最近检查：导入 '+last.copied+' 份，重复 '+last.duplicates+' 份，跳过 '+last.skipped+' 份。'}}
+ try{const r=await fetch(base+'/api/audio-sources');if(!r.ok)throw Error('读取失败');const s=await r.json();document.querySelector('#sources-form button[type="submit"]').disabled=false;document.querySelector('#source-memos').checked=s.voiceMemos;document.querySelector('#source-auto-mount').checked=Boolean(s.autoProcessOnMount);document.querySelector('#source-directories').value=s.directories.join('\n');const history=await fetch(base+'/api/audio-imports');if(history.ok){const last=await history.json();if(last.date)settingsStatus.textContent='最近检查：导入 '+last.copied+' 份，重复 '+last.duplicates+' 份，跳过 '+last.skipped+' 份。'}}
  catch{settingsStatus.textContent='读取设置失败，请关闭后重试。';document.querySelector('#sources-form button[type="submit"]').disabled=true}
 };
 document.querySelector('#close-settings').onclick=()=>settingsDialog.close();
 document.querySelector('#sources-form').onsubmit=async event=>{
  event.preventDefault();const b=event.submitter;b.disabled=true;
- try{const r=await fetch(base+'/api/audio-sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voiceMemos:document.querySelector('#source-memos').checked,directories:document.querySelector('#source-directories').value.split('\n').map(x=>x.trim()).filter(Boolean)})});const s=await r.json();if(!r.ok)throw Error(s.error||'保存失败');settingsStatus.textContent='已保存。下次点击“开始处理录音”时生效。'}catch(e){settingsStatus.textContent=e.message}finally{b.disabled=false}
+ try{const r=await fetch(base+'/api/audio-sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voiceMemos:document.querySelector('#source-memos').checked,autoProcessOnMount:document.querySelector('#source-auto-mount').checked,directories:document.querySelector('#source-directories').value.split('\n').map(x=>x.trim()).filter(Boolean)})});const s=await r.json();if(!r.ok)throw Error(s.error||'保存失败');settingsStatus.textContent=s.autoProcessOnMount?'已保存，匹配的外部存储接入后将自动处理。':'已保存。点击“开始处理录音”可手动导入。'}catch(e){settingsStatus.textContent=e.message}finally{b.disabled=false}
 };
 
 let historyRevision=0;

@@ -26,19 +26,30 @@ if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--icon" {
     exit(0)
 }
 
-final class Delegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
+final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate {
     var window: NSWindow!
     var web: WKWebView!
+    var loadingWorkbench = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.applicationIconImage = iconImage()
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 850), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Soundlog"; window.center(); window.isReleasedWhenClosed = false
+        window.delegate = self
         window.minSize = NSSize(width: 720, height: 540)
         web = WKWebView(frame: window.contentView!.bounds)
         web.autoresizingMask = [.width, .height]; web.navigationDelegate = self
         window.contentView!.addSubview(web)
         web.loadHTMLString("<html><body style='background:#f7f8f5;color:#45624c;font:18px -apple-system;padding:80px'>正在打开记录…</body></html>", baseURL: nil)
         window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        loadWorkbench()
+        let menu = NSMenu(); let app = NSMenuItem(); menu.addItem(app)
+        let submenu = NSMenu(); submenu.addItem(withTitle: "退出 Soundlog", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); app.submenu = submenu; NSApp.mainMenu = menu
+    }
+
+    func loadWorkbench() {
+        guard !loadingWorkbench else { return }
+        loadingWorkbench = true
         let root = Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         DispatchQueue.global().async {
             let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
@@ -48,20 +59,34 @@ final class Delegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
             do {
                 try process.run()
                 let bytes = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
-                guard process.terminationStatus == 0, let text = String(data: bytes, encoding: .utf8), let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)), url.host == "127.0.0.1" else { throw NSError(domain: "Soundlog", code: 1) }
-                DispatchQueue.main.async { self.web.load(URLRequest(url: url)) }
+                guard process.terminationStatus == 0, let text = String(data: bytes, encoding: .utf8),
+                      var parts = URLComponents(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
+                      parts.host == "127.0.0.1" else { throw NSError(domain: "Soundlog", code: 1) }
+                parts.queryItems = [URLQueryItem(name: "desktop", value: "1")]
+                guard let url = parts.url else { throw NSError(domain: "Soundlog", code: 1) }
+                DispatchQueue.main.async {
+                    self.loadingWorkbench = false
+                    let current = self.web.url
+                    if self.window.isVisible && (current?.port != url.port || current?.path != url.path || current?.query != url.query) {
+                        self.web.load(URLRequest(url: url))
+                    }
+                }
             } catch {
                 DispatchQueue.main.async {
+                    self.loadingWorkbench = false
+                    guard self.window.isVisible else { return }
                     let alert = NSAlert(); alert.messageText = "暂时无法打开 Soundlog"
                     alert.informativeText = "请重新打开应用。详细日志可在项目的调试目录查看。"; alert.runModal()
                 }
             }
         }
-        let menu = NSMenu(); let app = NSMenuItem(); menu.addItem(app)
-        let submenu = NSMenu(); submenu.addItem(withTitle: "退出 Soundlog", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); app.submenu = submenu; NSApp.mainMenu = menu
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return true
+        window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); loadWorkbench(); return true
+    }
+    func windowWillClose(_ notification: Notification) {
+        web.stopLoading()
+        web.loadHTMLString("", baseURL: nil)
     }
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else { decisionHandler(.cancel); return }
