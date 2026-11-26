@@ -197,15 +197,22 @@ class Pipeline:
                                     '<p>' + html.escape(e['sourceFile']) + ' · ' + str(e['startOffsetSeconds']) + ' 秒</p>',
                                     '<pre style="white-space:pre-wrap">' + html.escape(e['text']) + '</pre></section>']
                 (folder / 'sources.html').write_text('\n'.join(source_html), encoding='utf-8')
+                review = screening.get('dailyReviews', {}).get(day) or {}
                 for category, title in CATEGORIES.items():
-                    lines = ['# ' + day + ' ' + title, '', '基于机器转写的内容整理；观点按话语记录，身份与实际结果另行核实。', '']
+                    lines = ['# ' + day + ' ' + title, '']
+                    overview = review.get('overview') if category == 'journal' else None
+                    has_overview = isinstance(overview, str) and bool(overview.strip())
+                    if has_overview:
+                        lines += ['## 当日概括', '', overview, '', '## 录音记录', '']
+                    lines += ['录音内容基于机器转写整理；观点按话语记录，身份与实际结果另行核实。', '']
                     if category == 'actions':
                         lines += ['这里记录的是录音当时的请求、意向或承诺；不等于当前仍未完成。', '']
                     for r in rows:
                         if r['decision'] != 'retain' or category not in r['categories']: continue
                         f = known[r['id']]
                         if f['date'] != day: continue
-                        lines += [f"## {f['recordedStart']}", '', f['summary'], '']
+                        heading = '###' if has_overview else '##'
+                        lines += [f"{heading} {f['recordedStart']}", '', f['summary'], '']
                         if r.get('notes'):
                             lines += ['补充说明：' + r['notes'], '']
                         if category == 'actions': lines += [f"- 当时性质：{f.get('taskState')}；期限原话：{f.get('dueText') or '未提及'}。"]

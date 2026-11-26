@@ -86,7 +86,7 @@ def publish_daily(dest, day, facts, decisions, review=None):
     if not highlights:digest += ['未单独指定重点，可查看时间日记和分类记录。', '']
     for fid in highlights:digest += [f"- [{by_id[fid]['summary']}](scenes/{fid}.md)"]
     digest += ['', '## 事项与未决信息', '', '[查看录音中的事项](actions.md)。其中的计划与承诺均为录音当时的状态；当前是否完成须查看后续证据。', '',
-               '## 来源边界', '', '依据机器转写和保留内容整理；媒体观点不自动归于本人，未确定身份和结果保持未知。', '']
+               '## 来源边界', '', '录音内容依据机器转写和保留项整理。概括采用的其他记录以文中出处为准。媒体观点不自动归于本人，未确定身份和结果保持未知。', '']
     (folder/'daily-review.md').write_text('\n'.join(digest)+'\n', encoding='utf-8')
     write_json(folder/'daily-review.json', {'date':day,'overview':review.get('overview'), 'highlights':highlights,'mode':'agent_overview' if review else 'index_only'})
     overview = ['# '+day+' 每日首页', '', review.get('overview','本日录音内容索引。'), '', '[时间日记](timeline.md) · [每日复盘](daily-review.md) · [原文索引](sources.md)', '', '## 按用途阅读', '']

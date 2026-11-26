@@ -103,7 +103,8 @@ class PipelineTests(unittest.TestCase):
         self.pipeline.tick();state=self.pipeline.ingest(self.envelope());rid=state['resultId']
         screening=self.screening(rid)
         facts=json.loads((self.products/'results'/rid/'facts.json').read_text())['facts']
-        screening['dailyReviews']={'2026-11-07':{'overview':'讨论设备充电安排。','highlights':[facts[1]['id']]}}
+        overview = '讨论设备充电安排。已完成检查（工作管理/工作日志/202611.md，1107）。'
+        screening['dailyReviews']={'2026-11-07':{'overview':overview,'highlights':[facts[1]['id']]}}
         with self.assertRaises(ValueError):self.pipeline.publish(rid,screening)
         self.assertFalse((self.pipeline.delivery/'latest.json').exists())
         screening['dailyReviews']['2026-11-07']['highlights']=[facts[0]['id']]
@@ -114,6 +115,8 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(timeline['rows'][0]['recordedStart'],facts[0]['recordedStart'])
         self.assertIn('不等于当前仍未完成',(day/'actions.md').read_text())
         self.assertIn('讨论设备充电安排',(day/'daily-review.md').read_text())
+        self.assertIn(overview, (day/'journal.md').read_text())
+        self.assertNotIn('已完成检查', (day/'timeline.md').read_text())
 
     def test_grounded_questions_and_task_mentions(self):
         from soundlog_memory.library_tools import task_ledger,ask,answer
