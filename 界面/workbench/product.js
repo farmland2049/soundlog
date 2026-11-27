@@ -80,19 +80,14 @@ const pipelineStage=document.querySelector('#pipeline-stage');
 const pipelineStageCount=document.querySelector('#pipeline-stage-count');
 const pipelineTrack=document.querySelector('#pipeline-progress-track');
 const pipelineFill=document.querySelector('#pipeline-progress-fill');
-const agentHandoff=document.querySelector('#agent-handoff');
-const agentDialog=document.querySelector('#agent-dialog');
-const agentPrompt=document.querySelector('#agent-prompt');
-const agentCopyStatus=document.querySelector('#agent-copy-status');
 let runTimer=null;
-let latestAgentPrompt='';
 let lastRunStatus='';
 const desktopWindow=new URLSearchParams(location.search).get('desktop')==='1';
 let startingRun=false;
 
 function updateProgress(progress){
  if(!progress)return;
- const total=progress.total||6,step=progress.step||0,percent=Math.max(0,Math.min(100,progress.percent||0));
+ const total=progress.total||3,step=progress.step||0,percent=Math.max(0,Math.min(100,progress.percent||0));
  pipelineStage.textContent=progress.label||'等待开始';
  pipelineStageCount.textContent=step+'/'+total;
  pipelineFill.style.width=percent+'%';
@@ -101,44 +96,21 @@ function updateProgress(progress){
  pipelineTrack.setAttribute('aria-valuetext',`${progress.label||'等待开始'}，第${step}阶段，共${total}阶段，约${percent}%`);
 }
 function progressFor(status, pipeline){
- const phase=pipeline?.state,manual=pipeline?.manual?.state,total=6;
+ const phase=pipeline?.state,total=3;
  const make=(step,percent,label,state)=>({step,total,percent,label,state});
- const phaseState=['failed','agent_failed'].includes(status.state)?'failed':status.state==='running'?'running':'waiting';
- if(status.state==='completed')return make(6,100,'处理与成果核验完成','completed');
- if(status.resultState==='waiting_for_mounted_audio'&&status.state==='running'){
-  return make(1,8,'等待外部录音写入完成','waiting');
+ if(status.state==='completed')return make(3,100,'本机处理与按天归档完成','completed');
+ if(status.state==='failed')return make(phase==='audio_failed'?2:1,25,'处理或归档未完成','failed');
+ if(status.state==='waiting'||['waiting_for_mounted_audio','waiting_for_stable_files'].includes(status.resultState)){
+  return make(1,8,'等待录音写入完成','waiting');
  }
- if(status.state==='waiting')return make(1,5,'等待录音文件稳定','waiting');
- if(status.state==='running'&&manual==='running'){
-  return phase==='processing_audio'?make(2,25,'转写与声音分析','running'):make(1,8,'检查录音来源','running');
+ if(status.state==='running'){
+  if(phase==='archiving_audio')return make(3,80,'按天归档','running');
+  if(phase==='processing_audio')return make(2,35,'转写、声音分析与原文对齐','running');
+  return make(1,8,'检查录音来源','running');
  }
- if(phase==='processing_audio')return make(2,25,'转写与声音分析',phaseState);
- if(phase==='audio_failed')return make(2,25,'音频处理失败（原音保留）','failed');
- if(phase==='awaiting_agent')return make(3,43,'语义提炼与问题处理',phaseState);
- if(phase==='awaiting_screening')return make(4,60,'逐项筛选与每日交付',phaseState);
- if(phase==='awaiting_enrichment')return make(5,78,'纪要、事项、知识与复盘',phaseState);
- if(status.state==='running'&&manual==='agent_running')return make(6,94,'核对成果发布与队列','running');
- if(status.state==='needs_agent')return make(3,43,'语义提炼与问题处理','waiting');
- if(['failed','agent_failed'].includes(status.state))return make(1,8,'处理未完成','failed');
  return make(0,0,'等待开始','idle');
 }
 
-agentHandoff.onclick=()=>{
- agentPrompt.value=latestAgentPrompt;
- agentCopyStatus.textContent='';
- agentDialog.showModal();
-};
-document.querySelector('#close-agent-dialog').onclick=()=>agentDialog.close();
-document.querySelector('#copy-agent-prompt').onclick=async()=>{
- try{
-  await navigator.clipboard.writeText(agentPrompt.value);
-  agentCopyStatus.textContent='已复制，请粘贴到 Agent 对话发送。';
- }catch{
-  agentPrompt.focus();
-  agentPrompt.select();
-  agentCopyStatus.textContent='已选中提示词，请按 ⌘C（Windows 为 Ctrl+C）复制。';
- }
-};
 async function checkRun(force=false){
  clearTimeout(runTimer);
  try{
@@ -152,19 +124,17 @@ async function checkRun(force=false){
   lastRunStatus=statusKey;
   let pipeline=null;
   try{const p=await fetch(base+'/api/workbench',{cache:'no-store'});if(p.ok)pipeline=(await p.json()).pipeline}catch{}
-  latestAgentPrompt=s.agentPrompt||'';
   updateProgress(progressFor(s,pipeline));
-  agentHandoff.hidden=s.state!=='agent_failed'||!latestAgentPrompt;
   runStatus.textContent=s.message;startRun.disabled=s.state==='running';startRun.textContent=s.state==='running'?'正在处理…':'开始处理录音';
   if(s.state!=='running')await load();
- }catch{lastRunStatus='';agentHandoff.hidden=true;runStatus.textContent='连接中断，请刷新后查看。';startRun.disabled=false;if(force||!data)await load()}
+ }catch{lastRunStatus='';runStatus.textContent='连接中断，请刷新后查看。';startRun.disabled=false;if(force||!data)await load()}
  finally{clearTimeout(runTimer);runTimer=setTimeout(checkRun,3000)}
 }
 async function startProcessing(trigger='manual'){
  if(startingRun)return;
  startingRun=true;
- startRun.disabled=true;agentHandoff.hidden=true;runStatus.textContent='正在检查录音…';
- updateProgress({step:1,total:6,percent:5,label:'检查录音来源',state:'running'});
+ startRun.disabled=true;runStatus.textContent='正在检查录音…';
+ updateProgress({step:1,total:3,percent:5,label:'检查录音来源',state:'running'});
  try{
   const path=trigger==='mount'?'/api/run?trigger=mount':'/api/run';
   const r=await fetch(base+path,{method:'POST'});
@@ -179,72 +149,8 @@ document.querySelector('#refresh').onclick=()=>checkRun(true);
 checkRun();
 
 const settingsDialog=document.querySelector('#settings-dialog'),settingsStatus=document.querySelector('#settings-status');
-const agentForm=document.querySelector('#agent-settings-form');
-const defaultAgent=document.querySelector('#default-agent');
-const defaultModel=document.querySelector('#default-model');
-const agentStatus=document.querySelector('#agent-settings-status');
-const agentSave=agentForm.querySelector('button[type="submit"]');
-let savedAgentSettings=null;
-let agentLoadRevision=0;
-
-function setAgentFieldsEnabled(enabled){
- defaultAgent.disabled=!enabled;
- defaultModel.disabled=!enabled;
- agentSave.disabled=!enabled||!defaultAgent.value||defaultAgent.selectedOptions[0]?.disabled;
-}
-
-async function loadAgentSettings(){
- const revision=++agentLoadRevision;
- agentStatus.textContent='正在读取整理设置…';
- setAgentFieldsEnabled(false);
- try{
-  const response=await fetch(base+'/api/agent-settings',{cache:'no-store'});
-  if(!response.ok)throw Error('读取失败');
-  const settings=await response.json();
-  if(revision!==agentLoadRevision)return;
-  savedAgentSettings=settings;
-  defaultAgent.replaceChildren(...settings.agents.map(agent=>{
-   const option=new Option(agent.label+(agent.available?'':'（本机不可用）'),agent.id);
-   option.disabled=!agent.available;
-   return option;
-  }));
-  defaultAgent.value=settings.agent;
-  defaultModel.value=settings.model;
-  setAgentFieldsEnabled(true);
-  agentStatus.textContent=agentSave.disabled?'请选择本机可用的 Agent。':'';
- }catch{
-  if(revision===agentLoadRevision)agentStatus.textContent='暂时无法读取整理设置，请关闭后重试。';
- }
-}
-
-defaultAgent.onchange=()=>{
- defaultModel.value=defaultAgent.value===savedAgentSettings?.agent?savedAgentSettings.model:'';
- setAgentFieldsEnabled(true);
- agentStatus.textContent='';
-};
-agentForm.onsubmit=async event=>{
- event.preventDefault();
- const revision=agentLoadRevision;
- const data={agent:defaultAgent.value,model:defaultModel.value.trim()};
- setAgentFieldsEnabled(false);
- try{
-  const response=await fetch(base+'/api/agent-settings',{method:'POST',
-   headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
-  const settings=await response.json();
-  if(!response.ok)throw Error(settings.error||'保存失败');
-  if(revision!==agentLoadRevision)return;
-  savedAgentSettings=settings;
-  defaultModel.value=settings.model;
-  agentStatus.textContent='已保存，下次调用 Agent 时生效。';
- }catch(error){
-  if(revision===agentLoadRevision)agentStatus.textContent=error.message;
- }finally{
-  if(revision===agentLoadRevision)setAgentFieldsEnabled(true);
- }
-};
 document.querySelector('#open-settings').onclick=async()=>{
  settingsStatus.textContent='';settingsDialog.showModal();
- loadAgentSettings();
  try{const r=await fetch(base+'/api/audio-sources');if(!r.ok)throw Error('读取失败');const s=await r.json();document.querySelector('#sources-form button[type="submit"]').disabled=false;document.querySelector('#source-memos').checked=s.voiceMemos;document.querySelector('#source-auto-mount').checked=Boolean(s.autoProcessOnMount);document.querySelector('#source-directories').value=s.directories.join('\n');const history=await fetch(base+'/api/audio-imports');if(history.ok){const last=await history.json();if(last.date)settingsStatus.textContent='最近检查：导入 '+last.copied+' 份，重复 '+last.duplicates+' 份，跳过 '+last.skipped+' 份。'}}
  catch{settingsStatus.textContent='读取设置失败，请关闭后重试。';document.querySelector('#sources-form button[type="submit"]').disabled=true}
 };

@@ -59,12 +59,17 @@ def validate_doc(doc):
     return origin
 
 
-def scan_artifacts(runs):
+def scan_artifacts(runs, *, directories=None):
     """Select valid transcript and acoustic snapshots independently, once per batch."""
     runs = Path(runs)
     selected, acoustic, warnings = {}, {}, []
-    paths = sorted(runs.rglob('raw.json'))
-    paths += sorted(p for p in runs.rglob('speaker-aligned-transcript.json')
+    def artifacts(name):
+        if directories is None:
+            return runs.rglob(name)
+        return (directory / name for directory in directories)
+
+    paths = sorted(artifacts('raw.json'))
+    paths += sorted(p for p in artifacts('speaker-aligned-transcript.json')
                     if not (p.parent / 'raw.json').exists())
     for path in paths:
         try:
@@ -78,7 +83,7 @@ def scan_artifacts(runs):
                 selected[key] = (rank, path, doc, origin)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             warnings.append({'artifact': str(path), 'error': str(exc)})
-    for path in sorted(runs.rglob('sound-events.json')):
+    for path in sorted(artifacts('sound-events.json')):
         try:
             doc = read_json(path)
             origin = validate_doc({**doc, 'segments': []})

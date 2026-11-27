@@ -1,23 +1,6 @@
 # Soundlog 手动开始后的完整处理约定
 
-产品也提供`skills/soundlog/SKILL.md`作为可安装的`soundlog` skill使用形式。Skill负责定位项目与任务路由，完整阶段规范仍以本文和实际代码为准；不维护第二套流程。非skill使用形式留待后续讨论。
-
-个人视角优先：本人声音确认在`记忆库/运行/本人声音/`，使用`voice_calibration.confirmed_roles/annotate_evidence`按证据ID、原音哈希和精确偏移读取；MCP检索及网页问答材料带voiceAttribution。self/other仅是该片段的用户确认，不扩散到同号说话人或整段摘要。模型possible_self仍是候选，不能代替用户确认。“我的表达”“别人对我说的”“我听到的媒体”须结合语义角色分别判断，不把确认声音机械等同本人经历、承诺或当前完成状态。原始转写和正式记忆不自动改写。
-
-用户入口只保留一个：在本线程说“开始”。当前agent先在项目根运行`python3 scripts/soundlog_pipeline.py start`，然后自行接续至完成，用户无需逐步运行命令。`tick/ingest/publish/finish`保留为内部管线操作；`start`不是独立运行语义模型的后台程序。
-脚本不调用语义模型；用户手动发起处理后，由当前 Codex agent 负责真正阅读材料与语义筛选。
-用户已授权发现新音频后执行本机转写与全套内容交付，不需要重复逐批确认。
-不安装依赖、不下载或试验本地语义模型、不上传音频、不确认新身份、不提交或推送；ASR沿用现有音频引擎及缓存。
-
-## 执行到完成
-
-1. 读 AGENTS.md 和 PROJECT_STATUS.md，运行start。它检查待处理目录、接续已有管线，并返回未回答问题；即使音频状态idle，只要有问题或未处理文件就不会标记complete。同时检查 `记忆库/运行/自动管线/questions/` 中只有request.json而没有answer.json的问题；读取问题和检索证据、按需补查，用 `soundlog_library.py answer` 完成带引文回答。无音频、无未完成任务和问题时才结束，不生成空日记。
-2. tick 会处理稳定至少60秒、14位时间戳命名的音频，复用现有音频流水线，生成不可变每日场景和完整请求。失败时读私有 audio.log 并修复可恢复问题，绝不伪造转写。
-3. awaiting_agent：读取状态给出的 requestDirectory/instructions.md 与 request.json，按实际材料日期完成下述同日资料核对。逐块读取完整 utterances 和 contextUtterances，用 agent 自带能力完成四类提炼。以产品实际用途判断价值；无法理解的内容可以没有事实，但每条原文须有 coverage 决策和理由。保留原时间轴，按时间间隔与内容判断场景，不能凭相邻时间认定同一事件；区分用户补充、外部播客/媒体和现场来源，未能辨识则保留未知。不得将英语测评答案或播客经历写成用户履历。身份只承接已有明确且范围受限的用户确认。
-4. 材料较长时使用 product_workbench.py 的 prepare/compile 分批保存到 `记忆库/运行/自动管线/`；每批读完即保存，不预标未读。合并全部块为符合 products.py 原格式的 envelope，填写实际 processor。用 `soundlog_pipeline.py ingest --file 完整结果.json` 导入。代码检查全部块覆盖与逐字引文，但语义仍由agent判断。
-5. awaiting_screening：读取 resultId 对应 facts.json，逐条核对摘要与实际引文，必要时回到原文邻接片段。生成 screening.json，格式见下。明确且有用途的内容保留；语义不全、主体/对象不明而无法形成有意义场景的内容暂缓，不补造。观点只按当时话语保留，健康/技术数字不自动成为专业结论；历史请求/计划/承诺不当当前任务。每条必须有决策、理由；学习材料明确分儿童/成人，无法分类的学习用途可暂缓。
-6. `soundlog_pipeline.py publish --result 结果编号 --screening 筛选.json`。只有完整筛选与来源哈希通过后才生成交付包和目录指针。读回 receipt，逐项核对交付文件哈希、首页与来源链接，抽查几条实际原文；报告真实新增日期、保留/暂缓数量与入口。正式 Basic Memory 新增写入仍须具体授权，不自动扩大两日试点。
-7. 完成下述awaiting_enrichment扩展阶段并finish、个人内容与有新交付时的跨天复盘后，再次start，直到队列与输入都清空。中断后从state.json继续，保留中间决策，不重复要求用户审核。成果先达到可用、有出处、可回查，不以文案、界面或排版打磨拖延交付；无素材的功能栏目可以为空并说明。交付时给实际新增内容及可打开入口，不能只汇报阶段名或计划。
+当前 `python3 scripts/soundlog_pipeline.py start` 完成音频处理与按天归档后结束。工作台和外部存储接入使用同一入口。结果中的 `archiveIndex` 指向证据目录，`updatedDates` 表明新增或变更的日期。已有语义任务仍可通过 `status` 查看；本页下方的语义数据格式用于历史任务接续，次日个人记录流程另行实现。
 
 ## 同日资料核对
 

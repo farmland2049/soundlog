@@ -45,28 +45,22 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(self.pipeline.publish(state['resultId'], self.screening(state['resultId']), adopt=True)['bundle'], result['bundle'])
         self.assertEqual(before, (self.pipeline.delivery/'latest.json').read_bytes())
 
-    def test_start_keeps_existing_semantic_work_and_checks_new_inbox(self):
-        before=self.pipeline.tick()
-        inbox=self.root/'录音/待处理';inbox.mkdir(parents=True)
-        (inbox/'20261115090000.mp3').write_bytes(b'synthetic pending input')
-        with patch('soundlog_memory.pipeline.subprocess.run') as run:
-            result=self.pipeline.start()
-        run.assert_not_called()
-        self.assertEqual(result['requestId'],before['requestId'])
-        self.assertEqual(result['checkedAudioFiles'],['20261115090000.mp3'])
-        self.assertFalse(result['complete'])
+    def test_start_archives_independently_of_old_semantic_work_and_questions(self):
+        previous = self.pipeline.tick()
+        question = self.pipeline.home / 'questions/question-example'
+        question.mkdir(parents=True)
+        (question / 'request.json').write_text('{"question":"pending"}')
+        result = self.pipeline.start()
+        self.assertTrue(result['complete'])
+        self.assertEqual(result['updatedDates'], [])
+        self.assertEqual(self.pipeline.state(), previous)
+        self.assertFalse((question / 'answer.json').exists())
 
-    def test_start_never_marks_enrichment_or_pending_questions_complete(self):
-        self.pipeline.tick();state=self.pipeline.ingest(self.envelope())
-        self.pipeline.publish(state['resultId'],self.screening(state['resultId']))
-        self.assertFalse(self.pipeline.start()['complete'])
-        self.pipeline.finish_products({'schemaVersion':1,'reviewer':'test','sourceResultId':state['resultId'],'topics':[]},[])
-        folder=self.pipeline.home/'questions/question-synthetic';folder.mkdir(parents=True)
-        (folder/'request.json').write_text(json.dumps({'question':'synthetic question'}))
-        result=self.pipeline.start()
-        self.assertEqual(result['state'],'idle');self.assertFalse(result['complete'])
-        self.assertEqual(result['pendingQuestions'][0]['question'],'synthetic question')
-        (folder/'answer.json').write_text(json.dumps({'status':'unknown','unknown':'synthetic no evidence'}))
+    def test_start_saves_archive_failure_for_retry(self):
+        with patch.object(self.pipeline, 'archive_audio', side_effect=ValueError('archive failed')):
+            with self.assertRaisesRegex(ValueError, 'archive failed'):
+                self.pipeline.start()
+        self.assertEqual(self.pipeline.audio_state()['state'], 'audio_failed')
         self.assertTrue(self.pipeline.start()['complete'])
 
     def test_partial_output_and_incomplete_screening_never_publish(self):

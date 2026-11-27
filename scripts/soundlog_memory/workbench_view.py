@@ -58,14 +58,15 @@ def overview(pipeline):
         days.append({'date':day,'count':counts[day],'overview':daily.get('overview'),'categories':dict(categories),'bundle':bundle})
     graph_path=delivery/'task-graph.json';graph=json.loads(graph_path.read_text()) if graph_path.exists() else {'tasks':[]}
     d=derived(delivery) if catalog['days'] else {'topics':[],'writingPlans':[],'cleanDocuments':[],'marks':[],'intents':[]}
-    state=pipeline.state();manual_path=pipeline.home/'manual-run.json'
+    state=pipeline.audio_state();manual_path=pipeline.home/'manual-run.json'
     manual=json.loads(manual_path.read_text()) if manual_path.exists() else None
-    stages=[('audio','语音转写'),('semantic','语义筛选'),('daily','每日记录'),('tasks','事项跟踪'),('knowledge','知识与创作'),('reviews','跨天复盘')]
-    phase=state['state'];active={'processing_audio':0,'audio_failed':0,'awaiting_agent':1,'awaiting_screening':1,'awaiting_enrichment':4}.get(phase)
-    ready=[bool(days),bool(facts),bool(days),graph_path.exists(),bool(d['topics']),bool(reviews(delivery))]
+    stages=[('audio','转写、环境声分类、说话人分离与原文对齐'),('archive','按天归档')]
+    phase=state['state']
+    active={'processing_audio':0,'archiving_audio':1}.get(phase)
+    ready=[bool(state.get('archiveIndex'))]*2
     return {'days':days,'totals':{'days':len(days),'facts':len(facts),'tasks':len(graph['tasks']),'topics':len(d['topics']),'writing':len(d['writingPlans'])},
             'categories':dict(Counter(c for f in facts for c in f['selectedCategories'])),
-            'pipeline':{'state':phase,'stages':[{'id':key,'title':title,'status':('failed' if phase=='audio_failed' else 'active') if i==active else ('available' if ready[i] else 'empty')} for i,(key,title) in enumerate(stages)],'inbox':[{'name':p.name,'bytes':p.stat().st_size} for p in pipeline.inventory()],'manual':manual},
+            'pipeline':{'state':phase,'stages':[{'id':key,'title':title,'status':'active' if i==active else ('available' if ready[i] else 'empty')} for i,(key,title) in enumerate(stages)],'inbox':[{'name':p.name,'bytes':p.stat().st_size} for p in pipeline.inventory()],'manual':manual},
             'derivedCounts':{k:len(d.get(k,[])) for k in ('topics','writingPlans','cleanDocuments','marks','intents')},
             'rootKey':hashlib.sha256(str(pipeline.root.resolve()).encode()).hexdigest()[:24]}
 

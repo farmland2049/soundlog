@@ -78,10 +78,10 @@ def main():
     sub.add_parser('process', help='处理待处理录音；成功后原文件会移入已归档目录')
     args = p.parse_args()
     try:
-        if args.command in ('inbox', 'process'):
-            cmd = ['bash', str(ROOT / 'scripts/process-inbox.sh')]
-            if args.command == 'inbox': cmd.append('--dry-run')
-            return subprocess.call(cmd, cwd=ROOT)
+        if args.command == 'inbox':
+            return subprocess.call(['bash', str(ROOT / 'scripts/process-inbox.sh'), '--dry-run'], cwd=ROOT)
+        if args.command == 'process':
+            return subprocess.call([sys.executable, str(ROOT / 'scripts/soundlog_pipeline.py'), 'start'], cwd=ROOT)
         row, receipt, facts = selected()
         if args.command == 'status':
             inbox = ROOT / '录音/待处理'

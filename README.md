@@ -4,7 +4,7 @@
 
 **打开工作台：双击项目根目录的[启动Soundlog.command](启动Soundlog.command)**。默认直接阅读会议纪要、交谈、事件、待办、知识、创作和跨天复盘；原文、回听和处理过程移至独立调试后台；界面说明见[交互工作台](界面/README.md)。
 
-**开始处理：在Soundlog本线程说“开始”。** 当前agent先检查待处理目录，再沿既有管线完成分析和成果交付，连同未回答问题一并处理；不要求用户逐阶段操作。当前没有定时任务。成果先做到可用、有出处，不等待界面或文案完美。
+**开始处理：** 在 Soundlog 对话说“开始”，在成果页点击「开始处理录音」，或运行 `python3 scripts/soundlog_pipeline.py start`。入口完成本机转写、环境声分类、说话人分离、原文对齐及按天归档。
 
 **外部存储接入时处理：** 在工作台「设置 → 录音来源」启用接入自动处理，并填写录音存储的 `/Volumes/卷名/目录`。macOS 登录后的挂载监听器会打开 Soundlog 桌面应用并启动处理。首次安装见[录音来源设置](界面/README.md#录音来源设置与前置导入2026-11-17)。
 
@@ -12,9 +12,9 @@
 
 ### Skill使用形式：soundlog
 
-在支持本地skill的agent中调用`$soundlog 开始处理录音`，即可检查待处理目录并沿既有管线做到成果交付；也支持`$soundlog 继续`、`$soundlog 查看进度`和`$soundlog`后接录音问题。查看进度不会启动转写，问答只处理所问范围。Skill是本产品的一种使用形式；其他非skill使用形式留待后续讨论，本次不新增独立模型服务或定时任务。
+在支持本地 skill 的 agent 中调用 `$soundlog 开始处理录音`，即可处理收件箱并按天归档。查看进度使用 `status`，录音问答按所问范围单独执行。
 
-可维护的skill源码在[skills/soundlog/SKILL.md](skills/soundlog/SKILL.md)，依赖现有Soundlog仓库与本机音频环境，语义仍由调用它的agent完成。本机安装在`~/.codex/skills/soundlog`，链接回仓库这一份源码。另一台机器可将该目录链接到相应agent的技能目录；若单独复制skill，则通过`SOUNDLOG_ROOT`指定有效Soundlog仓库。定位辅助脚本不会处理音频，显式路径无效时直接报错，不退回其他项目。
+可维护的skill源码在[skills/soundlog/SKILL.md](skills/soundlog/SKILL.md)，依赖现有Soundlog仓库与本机音频环境。本机安装在`~/.codex/skills/soundlog`，链接回仓库这一份源码。另一台机器可将该目录链接到相应agent的技能目录；若单独复制skill，则通过`SOUNDLOG_ROOT`指定有效Soundlog仓库。定位辅助脚本不会处理音频，显式路径无效时直接报错，不退回其他项目。
 
 当前可用的 A—F 功能、入口与实测边界见[功能使用与验收](资料/A-F功能使用与验收.md)。当前语义提炼使用agent，音频引擎在本机运行；全链断网自治仍是后续目标。
 
@@ -101,13 +101,10 @@ python3 scripts/soundlog.py context 2026-11-10 证据ID
 平时只需将录音笔内的录音文件拷贝至 `录音/待处理/`（文件名格式如 `20261108153711.mp3`），然后执行：
 
 ```bash
-bash scripts/process-inbox.sh
+python3 scripts/soundlog_pipeline.py start
 ```
 
-脚本将自动：
-1. 校验时间戳并逐个调用 Release 模式原生核心进行三类分析；
-2. 提取大模型专属素材并移动源音频至 `录音/已归档/`；
-3. **全自动级联重构当天的全天场景剧本**，新版产出位于 `产出/大模型分析素材/每日场景-v2/`，`latest.json` 指向完整快照；旧版素材保留。
+脚本调用本机音频引擎完成四项处理，将成功处理的原音移至 `录音/已归档/`，并更新 `产出/每日录音归档/latest.json`。索引按日期定位带哈希的证据版本，保留逐句原文、声学事件、说话人时间线及其底层产物引用。
 
 ---
 
@@ -201,20 +198,9 @@ python3 scripts/memory.py search 关键词
 
 苹果原生转写、声音分类及 FluidAudio 说话人分离均已有本机实跑；识别结果仍未经人工抽查，不承诺识别准确率或处理速度。声音分类候选不等于已确认的地点、活动或现场/外放判断。
 
-## 自动处理与每日交付（首版）
+## 按天归档与历史成果
 
-将以 `YYYYMMDDHHmmss` 命名的音频放入 `录音/待处理/`。本线程每天上午8:00（上海时间）检查一次；电脑和 Codex 需可运行。正在复制、修改时间不足60秒的文件会等待下一轮。
-
-处理顺序为：现有本机转写/声学分析 → 原时间轴场景素材 → agent完整阅读和提炼 → 有意义内容筛选 → 原文校验 → 本地交付。语义处理使用定时唤醒的 agent 能力；脚本不会自行调用本地语言模型。无意义或无法理解的内容可暂缓，原材料保留。普通内容不需要逐批确认。
-
-交付入口是 `产出/自动交付/README.md`，按天提供每日记录、讨论纪要、录音中的事项、儿童学习、成人学习五类 Markdown，附原文定位。各批次 `index.html` 可直接本机打开进行关键词检索；`search.json`、`screening.json` 和 `receipt.json` 分别保存结构化内容、筛选决策和文件校验值。
-
-```bash
-python3 scripts/soundlog_pipeline.py status
-python3 scripts/soundlog_pipeline.py tick
-```
-
-`tick` 检查并推进脚本阶段，返回 `awaiting_agent` 或 `awaiting_screening` 时由 agent 按 [自动处理约定](scripts/pipeline-agent.md) 接着完成。任务状态保存在本机，可中断恢复。只有全部材料覆盖、全部候选筛选及来源校验通过才发布；失败不替换已有交付。
+`python3 scripts/soundlog_pipeline.py status` 分别显示音频归档状态与历史语义任务状态。新归档通过 `产出/每日录音归档/latest.json` 按日期查找。已有日记、纪要及其它语义成果仍从 `产出/自动交付/README.md` 和工作台读取。
 
 ### 每日首页、事项线索和证据问答
 
@@ -232,3 +218,11 @@ python3 scripts/soundlog_library.py ask '当时答应发送什么资料？' --qu
 ## 跨天与每周复盘
 
 工作台提供“跨天与每周复盘”入口。可用`soundlog_features.py review --from YYYY-MM-DD --to YYYY-MM-DD`生成范围证据索引，附`--spec`发布agent审阅后的精选复盘；命令只复用本机既有资料，不重新转写。儿童/成人学习分开，缺少资料的日期明确列出，历史承诺不直接当今天待办。每个段落可回到内容卡、原文与录音偏移，旧复盘版本保留。字段、边界与用法见[功能使用与验收](资料/A-F功能使用与验收.md)。
+
+### 手动准备单日个人记录
+
+`scripts/soundlog_daily_record.py` 读取指定日期的录音归档、Basic Memory 笔记与当月工作日志。需提供 `--date YYYY-MM-DD`、`--notes <Basic Memory 笔记目录>` 和 `--work-log <工作管理/工作日志目录>`。`--root` 可指定实际存放录音的 Soundlog 目录。输出含私有取证材料，保存在本机运行目录或临时目录。
+
+- 将 `audio.indexMarkdown` 写入 `audio.note` 指定的 Basic Memory 路径。先读当前正文和版本，已有索引且内容相同就复用。变化时只更新含 `soundlog:audio-evidence-index` 标记的轻量索引，并用读回所得的校验值保护更新。历史全量来源笔记保留。
+- 用当天资料整理生活、讨论、事项、学习与灵感。补充资料与录音同源时合并，保留出处与实际状态。来源缺失和无记录分别说明。可用 `--date YYYY-MM-DD --evidence 证据ID` 读回某条录音的内容、原音路径和偏移。
+- 在 `日常摘要/YYYY-MM-DD.md` 写入唯一的二级标题「综合记录」，其内容用 `<!-- soundlog:combined:start -->` 和 `<!-- soundlog:combined:end -->` 包围。同日再次运行先读回校验值，正文相同即跳过，有新增时只替换该段，保留其它文字和元数据。已发布的综合段会从后续取材中排除。首次没有主档时可在同一固定路径创建。
