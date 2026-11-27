@@ -12,7 +12,7 @@ dialog{width:min(580px,92vw);border:1px solid #dce3d7;border-radius:16px;padding
 .progress-caption span:last-child{color:#879286;font-variant-numeric:tabular-nums}
 .progress-track{height:9px;position:relative;overflow:hidden;border-radius:99px;background:#e6ebe3;box-shadow:inset 0 0 0 1px #dbe2d8}
 .progress-fill{height:100%;width:0;border-radius:inherit;background:linear-gradient(90deg,#8cb294,#3c7654);transition:width .45s ease,background-color .2s ease}
-.progress-ticks{position:absolute;inset:0;display:grid;grid-template-columns:repeat(6,1fr);pointer-events:none}
+.progress-ticks{position:absolute;inset:0;display:grid;grid-template-columns:repeat(3,1fr);pointer-events:none}
 .progress-ticks span{border-right:2px solid #f7f8f5}
 .pipeline-progress[data-state=waiting] .progress-fill{background:#91a68c}
 .pipeline-progress[data-state=failed] .progress-fill{background:#c66d58}

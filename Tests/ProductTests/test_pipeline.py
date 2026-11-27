@@ -45,28 +45,22 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(self.pipeline.publish(state['resultId'], self.screening(state['resultId']), adopt=True)['bundle'], result['bundle'])
         self.assertEqual(before, (self.pipeline.delivery/'latest.json').read_bytes())
 
-    def test_start_keeps_existing_semantic_work_and_checks_new_inbox(self):
-        before=self.pipeline.tick()
-        inbox=self.root/'录音/待处理';inbox.mkdir(parents=True)
-        (inbox/'20261115090000.mp3').write_bytes(b'synthetic pending input')
-        with patch('soundlog_memory.pipeline.subprocess.run') as run:
-            result=self.pipeline.start()
-        run.assert_not_called()
-        self.assertEqual(result['requestId'],before['requestId'])
-        self.assertEqual(result['checkedAudioFiles'],['20261115090000.mp3'])
-        self.assertFalse(result['complete'])
+    def test_start_archives_independently_of_old_semantic_work_and_questions(self):
+        previous = self.pipeline.tick()
+        question = self.pipeline.home / 'questions/question-example'
+        question.mkdir(parents=True)
+        (question / 'request.json').write_text('{"question":"pending"}')
+        result = self.pipeline.start()
+        self.assertTrue(result['complete'])
+        self.assertEqual(result['updatedDates'], [])
+        self.assertEqual(self.pipeline.state(), previous)
+        self.assertFalse((question / 'answer.json').exists())
 
-    def test_start_never_marks_enrichment_or_pending_questions_complete(self):
-        self.pipeline.tick();state=self.pipeline.ingest(self.envelope())
-        self.pipeline.publish(state['resultId'],self.screening(state['resultId']))
-        self.assertFalse(self.pipeline.start()['complete'])
-        self.pipeline.finish_products({'schemaVersion':1,'reviewer':'test','sourceResultId':state['resultId'],'topics':[]},[])
-        folder=self.pipeline.home/'questions/question-synthetic';folder.mkdir(parents=True)
-        (folder/'request.json').write_text(json.dumps({'question':'synthetic question'}))
-        result=self.pipeline.start()
-        self.assertEqual(result['state'],'idle');self.assertFalse(result['complete'])
-        self.assertEqual(result['pendingQuestions'][0]['question'],'synthetic question')
-        (folder/'answer.json').write_text(json.dumps({'status':'unknown','unknown':'synthetic no evidence'}))
+    def test_start_saves_archive_failure_for_retry(self):
+        with patch.object(self.pipeline, 'archive_audio', side_effect=ValueError('archive failed')):
+            with self.assertRaisesRegex(ValueError, 'archive failed'):
+                self.pipeline.start()
+        self.assertEqual(self.pipeline.audio_state()['state'], 'audio_failed')
         self.assertTrue(self.pipeline.start()['complete'])
 
     def test_partial_output_and_incomplete_screening_never_publish(self):
@@ -103,7 +97,8 @@ class PipelineTests(unittest.TestCase):
         self.pipeline.tick();state=self.pipeline.ingest(self.envelope());rid=state['resultId']
         screening=self.screening(rid)
         facts=json.loads((self.products/'results'/rid/'facts.json').read_text())['facts']
-        screening['dailyReviews']={'2026-11-07':{'overview':'讨论设备充电安排。','highlights':[facts[1]['id']]}}
+        overview = '讨论设备充电安排。已完成检查（工作管理/工作日志/202611.md，1107）。'
+        screening['dailyReviews']={'2026-11-07':{'overview':overview,'highlights':[facts[1]['id']]}}
         with self.assertRaises(ValueError):self.pipeline.publish(rid,screening)
         self.assertFalse((self.pipeline.delivery/'latest.json').exists())
         screening['dailyReviews']['2026-11-07']['highlights']=[facts[0]['id']]
@@ -114,6 +109,8 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(timeline['rows'][0]['recordedStart'],facts[0]['recordedStart'])
         self.assertIn('不等于当前仍未完成',(day/'actions.md').read_text())
         self.assertIn('讨论设备充电安排',(day/'daily-review.md').read_text())
+        self.assertIn(overview, (day/'journal.md').read_text())
+        self.assertNotIn('已完成检查', (day/'timeline.md').read_text())
 
     def test_grounded_questions_and_task_mentions(self):
         from soundlog_memory.library_tools import task_ledger,ask,answer

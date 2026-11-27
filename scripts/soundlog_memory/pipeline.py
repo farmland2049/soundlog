@@ -17,6 +17,7 @@ from .reading import load_verified_result
 from .scenes import resolve_snapshot, digest_bytes
 from .store import write_json
 from .daily_delivery import publish_daily
+from . import audio_archive
 
 CATEGORIES = {'journal': '每日记录', 'minutes': '讨论纪要', 'actions': '录音中的事项',
               'child_learning': '儿童学习与陪伴', 'adult_learning': '成人学习与知识'}
@@ -30,6 +31,7 @@ class Pipeline:
         self.products = self.root / '产出/功能提炼'
         self.scenes = self.root / '产出/大模型分析素材/每日场景-v2'
         self.delivery = self.root / '产出/自动交付'
+        self.audio_archive = self.root / '产出/每日录音归档'
         self.home.mkdir(parents=True, exist_ok=True)
 
     @contextmanager
@@ -53,22 +55,48 @@ class Pipeline:
         inbox = self.root / '录音/待处理'
         return sorted(p for p in inbox.iterdir() if p.is_file() and p.suffix.lower() in AUDIO) if inbox.exists() else []
 
+    def audio_state(self):
+        path = self.home / 'audio-state.json'
+        return json.loads(path.read_text()) if path.exists() else {'state': 'idle'}
+
+    def archive_audio(self):
+        return audio_archive.publish(self.root / '产出/运行历史', self.root / '录音/已归档',
+                                     self.audio_archive)
+
     def start(self):
-        """One entry for the calling agent; idle audio does not mean all work is done."""
-        files = [p.name for p in self.inventory()]
-        state = self.tick()
-        questions = []
-        for path in sorted((self.home/'questions').glob('question-*/request.json')):
-            if (path.parent/'answer.json').exists(): continue
-            request = json.loads(path.read_text())
-            questions.append({'id': path.parent.name, 'question': request['question'], 'directory': str(path.parent)})
-        remaining = [p.name for p in self.inventory()]
-        complete = state['state'] == 'idle' and not remaining and not questions
-        return {**state, 'checkedAudioFiles': files, 'remainingAudioFiles': remaining,
-                'pendingQuestions': questions, 'complete': complete,
-                'agentInstructions': str(self.root/'scripts/pipeline-agent.md'),
-                'execution': 'current_agent',
-                'boundary': '脚本处理本机确定性阶段；当前agent须继续提炼、筛选、派生交付及问题回答，不能把单步返回当全流程完成。'}
+        """Process audio and verify its date index independently of semantic jobs."""
+        with self.lock():
+            files = self.inventory()
+            if any(p.is_symlink() or not re.fullmatch(r'\d{14}', p.stem) for p in files):
+                raise ValueError('待处理文件含符号链接或非14位时间戳名称，请检查')
+            names = [path.name for path in files]
+            if any(time.time() - path.stat().st_mtime < 60 for path in files):
+                return {'state': 'waiting_for_stable_files', 'complete': False, 'remainingAudioFiles': names}
+            state_path = self.home / 'audio-state.json'
+            write_json(state_path, {'state': 'processing_audio'})
+            try:
+                audio_failed = False
+                if files:
+                    if not any(os.access(self.root / path, os.X_OK) for path in
+                               ('.build/release/SoundlogCLI', '.build/debug/SoundlogCLI')):
+                        raise ValueError('现有音频执行程序不可用')
+                    with (self.home / 'audio.log').open('a') as log:
+                        result = subprocess.run(['bash', 'scripts/process-inbox.sh', '--defer-day-archive'],
+                                                cwd=self.root, stdout=log, stderr=log)
+                    audio_failed = result.returncode != 0
+                write_json(state_path, {'state': 'archiving_audio'})
+                archive = self.archive_audio()
+                if audio_failed:
+                    raise ValueError('部分录音处理失败，详见 audio.log；已成功的录音已按天归档')
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                write_json(state_path, {'state': 'audio_failed', 'error': str(exc)})
+                raise
+            remaining = [path.name for path in self.inventory()]
+            result = {'state': 'idle', 'complete': not remaining, 'checkedAudioFiles': names,
+                      'remainingAudioFiles': remaining, 'updatedDates': archive['updatedDates'],
+                      'archiveIndex': str(self.audio_archive / 'latest.json') if archive['days'] else None}
+            write_json(state_path, result)
+            return result
 
     def tick(self):
         with self.lock():
@@ -87,7 +115,7 @@ class Pipeline:
                 self.save({**state, 'state': 'processing_audio', 'files': [p.name for p in files]})
                 log = self.home / 'audio.log'
                 with log.open('a') as out:
-                    result = subprocess.run(['bash', 'scripts/process-inbox.sh'], cwd=self.root, stdout=out, stderr=out)
+                    result = subprocess.run(['bash', 'scripts/process-inbox.sh', '--legacy-scenes'], cwd=self.root, stdout=out, stderr=out)
                 if result.returncode:
                     self.save({**state, 'state': 'audio_failed', 'log': str(log)})
                     raise ValueError('音频处理失败，详见 audio.log；下次重试复用已有产物')
@@ -197,15 +225,22 @@ class Pipeline:
                                     '<p>' + html.escape(e['sourceFile']) + ' · ' + str(e['startOffsetSeconds']) + ' 秒</p>',
                                     '<pre style="white-space:pre-wrap">' + html.escape(e['text']) + '</pre></section>']
                 (folder / 'sources.html').write_text('\n'.join(source_html), encoding='utf-8')
+                review = screening.get('dailyReviews', {}).get(day) or {}
                 for category, title in CATEGORIES.items():
-                    lines = ['# ' + day + ' ' + title, '', '基于机器转写的内容整理；观点按话语记录，身份与实际结果另行核实。', '']
+                    lines = ['# ' + day + ' ' + title, '']
+                    overview = review.get('overview') if category == 'journal' else None
+                    has_overview = isinstance(overview, str) and bool(overview.strip())
+                    if has_overview:
+                        lines += ['## 当日概括', '', overview, '', '## 录音记录', '']
+                    lines += ['录音内容基于机器转写整理；观点按话语记录，身份与实际结果另行核实。', '']
                     if category == 'actions':
                         lines += ['这里记录的是录音当时的请求、意向或承诺；不等于当前仍未完成。', '']
                     for r in rows:
                         if r['decision'] != 'retain' or category not in r['categories']: continue
                         f = known[r['id']]
                         if f['date'] != day: continue
-                        lines += [f"## {f['recordedStart']}", '', f['summary'], '']
+                        heading = '###' if has_overview else '##'
+                        lines += [f"{heading} {f['recordedStart']}", '', f['summary'], '']
                         if r.get('notes'):
                             lines += ['补充说明：' + r['notes'], '']
                         if category == 'actions': lines += [f"- 当时性质：{f.get('taskState')}；期限原话：{f.get('dueText') or '未提及'}。"]

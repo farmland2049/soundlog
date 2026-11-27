@@ -19,7 +19,7 @@ class WorkbenchViewTests(unittest.TestCase):
  def tearDown(self):self.f.tearDown()
  def test_day_and_overview_use_real_selected_content(self):
   result=view.overview(self.p);self.assertEqual(result['totals']['days'],2);self.assertEqual(result['totals']['facts'],2)
-  self.assertEqual(result['pipeline']['state'],'awaiting_enrichment')
+  self.assertEqual(result['pipeline']['state'],'idle')
   day=view.day_view(self.p,'2026-11-07');self.assertEqual(len(day['facts']),1)
   self.assertEqual(day['facts'][0]['summary'],self.f.fact()['summary'])
   with self.assertRaises(ValueError):view.day_view(self.p,'../../state')
@@ -72,9 +72,9 @@ class WorkbenchHTTPTests(unittest.TestCase):
   code,body=self.req('/token/api/products');self.assertEqual(code,200);self.assertIn('activities',json.loads(body))
   for asset in ['product.css','product.js']:
    self.assertEqual(self.req('/token/assets/'+asset)[0],200)
- def test_run_status_does_not_report_semantic_handoff_as_complete(self):
+ def test_run_status_leaves_legacy_semantic_job_separate(self):
   code,body=self.req('/token/api/run-status');self.assertEqual(code,200)
-  self.assertEqual(json.loads(body)['state'],'needs_agent')
+  self.assertEqual(json.loads(body)['state'],'idle')
   self.assertNotIn('requestDirectory',body.decode())
  def test_run_status_shows_failure_without_exposing_logs(self):
   from soundlog_memory.store import write_json
@@ -102,56 +102,21 @@ class WorkbenchHTTPTests(unittest.TestCase):
     time.sleep(.01)
   self.assertEqual(calls,['collect','pipeline'])
 
- def test_agent_prompt_describes_live_handoff_without_exposing_transcript(self):
-  code,body=self.req('/token/api/run-status')
-  self.assertEqual(code,200)
-  prompt=json.loads(body)['agentPrompt']
-  self.assertIn(str(self.p.root),prompt)
-  self.assertIn('scripts/pipeline-agent.md',prompt)
-  self.assertIn('完成派生成果和发布',prompt)
-  self.assertNotIn(self.f.fact()['summary'],prompt)
-
- def test_completed_question_does_not_leave_stale_handoff(self):
-  from soundlog_memory.store import write_json
-  self.p.save({'state':'idle'})
-  write_json(self.p.home/'manual-run.json',{'state':'awaiting_agent','pendingQuestions':1})
-  folder=self.p.home/'questions/question-example'
-  folder.mkdir(parents=True)
-  write_json(folder/'request.json',{'question':'private question'})
-  _,body=self.req('/token/api/run-status')
-  self.assertIn('待答问题 1 条',json.loads(body)['agentPrompt'])
-  write_json(folder/'answer.json',{})
-  _,body=self.req('/token/api/run-status')
-  self.assertIsNone(json.loads(body)['agentPrompt'])
-
- def test_button_invokes_codex_and_rejects_exit_without_pipeline_completion(self):
-  import threading
+ def test_button_completes_archive_without_running_agent(self):
+  import time
   from soundlog_memory import agent_runner
-  entered=threading.Event()
-  release=threading.Event()
-  calls=[]
+  from soundlog_memory.pipeline import Pipeline
 
-  def run(pipeline,prompt):
-   calls.append(prompt)
-   entered.set()
-   release.wait(3)
-
-  with patch('soundlog_memory.audio_sources.collect'), patch.object(agent_runner,'run_codex',run):
-   try:
-    self.assertEqual(self.req('/token/api/run','POST')[0],202)
-    self.assertTrue(entered.wait(3))
-    self.assertIn('$soundlog',calls[0])
-    status=json.loads(self.req('/token/api/run-status')[1])
-    self.assertEqual(status['state'],'running')
-    self.assertIsNone(status['agentPrompt'])
-    self.assertEqual(json.loads(self.req('/token/api/run','POST')[1])['state'],'already_running')
-   finally:
-    release.set()
-   import time
+  previous=self.p.state()
+  archive={'state':'idle','complete':True,'updatedDates':['2026-11-07']}
+  with patch('soundlog_memory.audio_sources.collect'), patch.object(Pipeline,'start',return_value=archive), patch.object(agent_runner,'run_agent') as agent:
+   self.assertEqual(self.req('/token/api/run','POST')[0],202)
    for _ in range(100):
     status=json.loads(self.req('/token/api/run-status')[1])
-    if status['state']=='agent_failed':break
+    if status['state']=='completed':break
     time.sleep(.01)
-   self.assertEqual(status['state'],'agent_failed')
-   self.assertIn('$soundlog',status['agentPrompt'])
-   self.assertEqual(len(calls),1)
+   self.assertEqual(status['state'],'completed')
+   self.assertEqual(status['updatedDates'],['2026-11-07'])
+   self.assertIsNone(status['agentPrompt'])
+   agent.assert_not_called()
+  self.assertEqual(self.p.state(),previous)

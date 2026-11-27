@@ -11,6 +11,8 @@ LLM_OUTPUT_DIR="产出/大模型分析素材"
 
 is_mock=0
 is_dry_run=0
+legacy_scenes=0
+defer_day_archive=0
 extra_params=()
 
 while [[ $# -gt 0 ]]; do
@@ -24,12 +26,20 @@ while [[ $# -gt 0 ]]; do
             is_dry_run=1
             shift
             ;;
+        --legacy-scenes)
+            legacy_scenes=1
+            shift
+            ;;
+        --defer-day-archive)
+            defer_day_archive=1
+            shift
+            ;;
         --help|-h)
             echo "用法: $0 [--mock] [--dry-run] [--param key=value ...]"
             echo ""
             echo "说明:"
             echo "  检查 录音/待处理/ 目录，如果有待处理录音文件则逐一调用 SoundlogCLI 处理。"
-            echo "  处理成功后自动将源文件移动到 录音/已归档/ 目录，并将产物汇总至 产出/大模型分析素材/。"
+            echo "  处理成功后自动将源文件移动到 录音/已归档/ 目录，并将录音证据按天归档至 产出/每日录音归档/。"
             echo ""
             echo "选项:"
             echo "  --mock      开启 Mock 假引擎模式（仅校验格式与时长，快速验证流程）"
@@ -44,7 +54,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-mkdir -p "$INBOX_DIR" "$ARCHIVE_DIR" "$RAW_OUTPUT_DIR" "$LLM_OUTPUT_DIR"
+mkdir -p "$INBOX_DIR" "$ARCHIVE_DIR" "$RAW_OUTPUT_DIR"
+if [[ $legacy_scenes -eq 1 ]]; then
+    mkdir -p "$LLM_OUTPUT_DIR"
+fi
 
 # 扫描待处理音频文件
 audio_files=()
@@ -132,17 +145,18 @@ for idx in "${!audio_files[@]}"; do
 
         # 查找该文件在 run_dir 下的产物目录 (hash-filename)
         file_out=$(find "$run_dir" -maxdepth 1 -mindepth 1 -type d -name "*-${filename}" | head -n 1)
-        if [[ -n "$file_out" && -d "$file_out" ]]; then
+        if [[ -z "$file_out" || ! -d "$file_out" ]]; then
+            echo "[失败] 未定位到产物子目录: $run_dir/*-$filename"
+            failure_count=$((failure_count + 1))
+            continue
+        fi
+        if [[ $legacy_scenes -eq 1 ]]; then
             echo "生成大模型分析素材..."
             if ! python3 scripts/prepare_llm_material.py "$file_out" "$LLM_OUTPUT_DIR" "$base_name"; then
                 echo "[失败] 素材生成失败，源文件保留在待处理箱。"
                 failure_count=$((failure_count + 1))
                 continue
             fi
-        else
-            echo "[失败] 未定位到产物子目录: $run_dir/*-$filename"
-            failure_count=$((failure_count + 1))
-            continue
         fi
 
         # Same-filesystem hard-link then unlink: create-only, no clobber, no copy.
@@ -172,7 +186,7 @@ PYARCHIVE
     fi
 done
 
-if [[ $success_count -gt 0 ]]; then
+if [[ $success_count -gt 0 && $legacy_scenes -eq 1 ]]; then
     echo ""
     echo "=================================================="
     echo "更新跨文件按天聚合场景库 (scripts/build_daily_scenes.py)..."
@@ -181,6 +195,10 @@ if [[ $success_count -gt 0 ]]; then
         aggregate_failed=1
     fi
     echo "=================================================="
+elif [[ $legacy_scenes -eq 0 && $defer_day_archive -eq 0 ]]; then
+    if ! python3 scripts/soundlog_pipeline.py archive; then
+        aggregate_failed=1
+    fi
 fi
 
 echo ""
@@ -190,8 +208,7 @@ echo "  总待处理数: $total_count"
 echo "  成功归档数: $success_count"
 echo "  处理失败数: $failure_count"
 echo "  跳过规范数: $skipped_count"
-echo "  大模型素材目录: $LLM_OUTPUT_DIR/"
-echo "  按天聚合场景库: $LLM_OUTPUT_DIR/每日场景-v2/ (latest.json 指向完整快照)"
+echo "  每日录音归档: 产出/每日录音归档/"
 echo "  归档源文件目录: $ARCHIVE_DIR/"
 echo "=================================================="
 
