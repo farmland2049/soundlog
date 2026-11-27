@@ -218,3 +218,11 @@ python3 scripts/soundlog_library.py ask '当时答应发送什么资料？' --qu
 ## 跨天与每周复盘
 
 工作台提供“跨天与每周复盘”入口。可用`soundlog_features.py review --from YYYY-MM-DD --to YYYY-MM-DD`生成范围证据索引，附`--spec`发布agent审阅后的精选复盘；命令只复用本机既有资料，不重新转写。儿童/成人学习分开，缺少资料的日期明确列出，历史承诺不直接当今天待办。每个段落可回到内容卡、原文与录音偏移，旧复盘版本保留。字段、边界与用法见[功能使用与验收](资料/A-F功能使用与验收.md)。
+
+### 手动准备单日个人记录
+
+`scripts/soundlog_daily_record.py` 读取指定日期的录音归档、Basic Memory 笔记与当月工作日志。需提供 `--date YYYY-MM-DD`、`--notes <Basic Memory 笔记目录>` 和 `--work-log <工作管理/工作日志目录>`。`--root` 可指定实际存放录音的 Soundlog 目录。输出含私有取证材料，保存在本机运行目录或临时目录。
+
+- 将 `audio.indexMarkdown` 写入 `audio.note` 指定的 Basic Memory 路径。先读当前正文和版本，已有索引且内容相同就复用。变化时只更新含 `soundlog:audio-evidence-index` 标记的轻量索引，并用读回所得的校验值保护更新。历史全量来源笔记保留。
+- 用当天资料整理生活、讨论、事项、学习与灵感。补充资料与录音同源时合并，保留出处与实际状态。来源缺失和无记录分别说明。可用 `--date YYYY-MM-DD --evidence 证据ID` 读回某条录音的内容、原音路径和偏移。
+- 在 `日常摘要/YYYY-MM-DD.md` 写入唯一的二级标题「综合记录」，其内容用 `<!-- soundlog:combined:start -->` 和 `<!-- soundlog:combined:end -->` 包围。同日再次运行先读回校验值，正文相同即跳过，有新增时只替换该段，保留其它文字和元数据。已发布的综合段会从后续取材中排除。首次没有主档时可在同一固定路径创建。
