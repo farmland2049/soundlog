@@ -221,6 +221,8 @@ python3 scripts/soundlog_library.py ask '当时答应发送什么资料？' --qu
 
 ### 每日经历分析与归档
 
+本机可设置每日 09:00（Asia/Shanghai）的 Agent 任务，使用已有归档分析前一天，并发布到 Soundlog 成果页和 Basic Memory。参见[次日上午定时分析](scripts/pipeline-agent.md#次日上午定时分析)。
+
 在 Soundlog 项目运行以下命令。标准工作区会自动定位正式 Basic Memory 笔记目录。独立检出可在子命令前加 `--notes <笔记目录>`，或设置 `SOUNDLOG_BASIC_MEMORY_NOTES`。
 
 ```bash
