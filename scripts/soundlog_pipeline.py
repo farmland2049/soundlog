@@ -6,6 +6,15 @@ from pathlib import Path
 from soundlog_memory.pipeline import Pipeline
 
 
+def resolve_work_log(path, parser):
+    if path is not None:
+        return path.resolve()
+    matches = list(Path.home().glob('Library/CloudStorage/坚果云-*/工作管理/工作日志'))
+    if len(matches) != 1:
+        parser.error('请用 --work-log 指定工作日志目录')
+    return matches[0].resolve()
+
+
 def main():
     p = argparse.ArgumentParser(description='本地音频全流程管线')
     p.add_argument('--root', type=Path, default=Path(__file__).resolve().parent.parent)
@@ -19,6 +28,11 @@ def main():
     analysis.add_argument('--date', required=True)
     analysis.add_argument('--work-log', type=Path, help='工作管理的工作日志目录')
     analysis.add_argument('--refresh', action='store_true', help='文字来源更新时重新分析')
+    history = sub.add_parser('history-search', help='回查当日话题在此前日期的录音及文字依据')
+    history.add_argument('--date', required=True)
+    history.add_argument('--term', action='append', required=True)
+    history.add_argument('--work-log', type=Path)
+    history.add_argument('--limit', type=int, default=24)
     archive_delivery = sub.add_parser('archive-delivery', help='归档已发布的每日正文')
     archive_delivery.add_argument('--date', required=True)
     ingest = sub.add_parser('ingest'); ingest.add_argument('--file', type=Path, required=True)
@@ -35,16 +49,16 @@ def main():
                 result = pipeline.archive_audio()
         elif a.command == 'prepare-analysis':
             from soundlog_daily_record import prepare
-            work_log = a.work_log
-            if work_log is None:
-                matches = list(Path.home().glob('Library/CloudStorage/坚果云-*/工作管理/工作日志'))
-                if len(matches) != 1:
-                    p.error('请用 --work-log 指定工作日志目录')
-                work_log = matches[0]
             if pipeline.notes is None:
                 p.error('请指定 Basic Memory 笔记目录')
-            sources = prepare(pipeline.notes, work_log.resolve(), a.date)
+            sources = prepare(pipeline.notes, resolve_work_log(a.work_log, p), a.date)
             result = pipeline.prepare_analysis(a.date, sources, refresh=a.refresh)
+        elif a.command == 'history-search':
+            from soundlog_memory.historical_context import search, save_search
+            if pipeline.notes is None:
+                p.error('请指定 Basic Memory 笔记目录')
+            result = save_search(pipeline.home, search(
+                pipeline.notes, resolve_work_log(a.work_log, p), a.date, a.term, limit=a.limit))
         elif a.command == 'archive-delivery':
             with pipeline.lock():
                 result = {'path': pipeline.archive_delivery(a.date)}

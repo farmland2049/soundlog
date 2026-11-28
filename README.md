@@ -230,5 +230,6 @@ python3 scripts/soundlog_pipeline.py prepare-analysis --date YYYY-MM-DD
 
 - 音频处理保留项目内的原音、完整运行产物和技术索引。同步将逐句转写、时间戳、匿名说话人、声学事件和证据 ID 写入 Basic Memory 的 `soundlog/sources/YYYY-MM-DD.json`。既有 Markdown 来源笔记保留。已有录音可运行 `archive` 补齐每日素材。
 - `prepare-analysis` 从 Basic Memory 的当日素材生成分析请求，另在 `sameDaySources` 提供 Basic Memory 日常摘要、工作日结、事件及「工作管理」当日工作日志。可用 `--work-log` 指定工作日志目录。没有录音但有文字来源的日期也能处理。重复取材复用已完成结果，来源变化后可重新分析。
+- 遇到回顾或跨天延续的话题，用 `history-search --date YYYY-MM-DD --term 关键词` 检索当天之前的录音和文字来源，按[历史情境核对](scripts/pipeline-agent.md#历史情境核对)保存证据与关联判断。
 - Agent 按[同日资料核对](scripts/pipeline-agent.md#同日资料核对)归纳内容，使用既有导入、筛选、发布与派生流程。发布通过同一份交付生成 Soundlog 界面数据和 Basic Memory 的 `soundlog/daily/YYYY-MM-DD.md`。旧成果可用 `archive-delivery --date YYYY-MM-DD` 补归档。正文发生人工修改时，归档会报告冲突。
 - `scripts/soundlog_daily_record.py --date YYYY-MM-DD --evidence 证据ID` 可回查已归档的原句、原音文件及偏移；路径独立变更后需对应更新原音定位。

@@ -251,6 +251,11 @@ class Pipeline:
                     original = evidence.get(e['id'])
                     if not original or not e['quote'] or e['quote'] not in original['text'] or any(e[k] != original[k] for k in ('sourceFile', 'sourceSHA256', 'start', 'end', 'startOffsetSeconds', 'endOffsetSeconds')):
                         raise ValueError('候选引文与原始来源不符')
+            days = sorted({name[:10] for name in receipt['artifacts']
+                           if re.fullmatch(r'\d{4}-\d{2}-\d{2}_journal\.md', name)})
+            if 'historyChecks' in screening:
+                from .historical_context import validate_checks
+                validate_checks(self.home, screening['historyChecks'], known, days)
             identity = hashlib.sha256((json.dumps(screening, sort_keys=True, ensure_ascii=False) + digest_bytes(Path(__file__)) + digest_bytes(Path(__file__).with_name('daily_delivery.py'))).encode()).hexdigest()[:24]
             final = self.delivery / ('bundle-' + identity)
             self.delivery.mkdir(parents=True, exist_ok=True)
@@ -259,7 +264,6 @@ class Pipeline:
             retained = [{**known[r['id']], 'reviewNotes': r.get('notes', ''), 'selectedCategories':r['categories']}
                         for r in rows if r['decision'] == 'retain']
             write_json(dest / 'search.json', {'facts': retained, 'sourceResultId': rid})
-            days = sorted({name[:10] for name in receipt['artifacts'] if re.fullmatch(r'\d{4}-\d{2}-\d{2}_journal\.md', name)})
             for day in days:
                 folder = dest / day; folder.mkdir(exist_ok=True)
                 sources = ['# 原文证据索引', '']
@@ -349,7 +353,9 @@ class Pipeline:
             task_ledger(self.delivery)
             hashes = state.get('pendingDayHashes')
             if adopt:
-                hashes = {n[:10]: sha for n,sha in sr['artifacts'].items() if n.endswith('_utterances.json')}
+                hashes = {**state.get('dayHashes', {}), **{
+                    n[:10]: sha for n, sha in sr['artifacts'].items()
+                    if n.endswith('_utterances.json') and n[:10] in days}}
             saved_snapshots = state.get('basicMemorySnapshots', {})
             if state.get('analysisSnapshot'):
                 saved_snapshots = {**saved_snapshots, **dict.fromkeys(days, state['analysisSnapshot'])}
