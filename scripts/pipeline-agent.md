@@ -1,12 +1,14 @@
 # Soundlog 手动开始后的完整处理约定
 
-当前 `python3 scripts/soundlog_pipeline.py start` 完成音频处理与按天归档后结束。工作台和外部存储接入使用同一入口。结果中的 `archiveIndex` 指向证据目录，`updatedDates` 表明新增或变更的日期。已有语义任务仍可通过 `status` 查看；本页下方的语义数据格式用于历史任务接续，次日个人记录流程另行实现。
+运行 `python3 scripts/soundlog_pipeline.py start` 完成本机音频处理并同步每日素材。再执行 `prepare-analysis --date YYYY-MM-DD` 取得指定日期的分析请求和 `sameDaySources`。从请求目录读取原文与上下文，覆盖全部材料块，使用 `ingest` 导入结果、`publish` 发布分栏和复盘，再用 `finish` 完成派生交付。Basic Memory 当日正文由发布生成，Soundlog 界面沿用同一批成果。
 
 ## 同日资料核对
 
+每日成果正文保存在 `soundlog/daily/`。取材使用当日来源与工作日志；旧成果仅用于核对。
+
 每次生成每日记录、每日复盘或相关功能总结，按成果的实际自然日逐日核对。处理历史积压时查历史录音对应日期；直接受托总结指定日期时查该日期，即使该日没有录音，也可依据实际存在的文字记录完成总结。接续到筛选或扩展阶段时，若本轮未核对同日来源，先补查。
 
-- Soundlog：查目标日已审阅事实和必要的逐字稿。
+- 录音：使用 Basic Memory 的 `soundlog/sources/YYYY-MM-DD.json` 及据此生成的分析请求。既有成果可用于核对，录音引文按证据 ID 回查。
 - Basic Memory：从工作区 `05-日常工具/BasicMemory/笔记/` 查 `工作日结/YYYY-MM-DD.md`、`长期记忆/事件/` 和同日直接相关的笔记。仅取与本次成果相关的段落，优先核对原始记录和明确更正。既有 Soundlog 归档与对应录音同源，去重时按同一来源处理。
 - 工作管理：在本机坚果云挂载目录中打开 `工作管理/工作日志/YYYYMM.md`（macOS 挂载目录通常为 `~/Library/CloudStorage/坚果云-*/`），取对应日期段落。日期可以用紧凑月日标记，例如 11 月 26 日对应 `1126`。影响工作结论和状态时，按已有保密范围核对该条记录所指向的同日原件。
 

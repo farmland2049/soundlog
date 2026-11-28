@@ -6,7 +6,12 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
 import test_products as fixtures
 from soundlog_memory.pipeline import Pipeline
-from soundlog_memory.products import import_result
+from soundlog_memory.products import import_result, load_request
+from soundlog_memory.basic_memory_daily import sync_sources
+from soundlog_memory.product_view import results
+from soundlog_memory.scenes import resolve_snapshot, digest_bytes
+from soundlog_memory.store import write_json
+from soundlog_daily_record import prepare
 
 
 class PipelineTests(unittest.TestCase):
@@ -44,6 +49,47 @@ class PipelineTests(unittest.TestCase):
         before = (self.pipeline.delivery/'latest.json').read_bytes()
         self.assertEqual(self.pipeline.publish(state['resultId'], self.screening(state['resultId']), adopt=True)['bundle'], result['bundle'])
         self.assertEqual(before, (self.pipeline.delivery/'latest.json').read_bytes())
+
+    def test_basic_memory_sources_to_archived_daily_delivery(self):
+        day = '2026-11-07'
+        notes = self.root / 'notes'
+        notes.mkdir()
+        self.pipeline.notes = notes
+        original = resolve_snapshot(self.scenes) / (day + '_utterances.json')
+        audio = json.loads(original.read_text())
+        archive = self.pipeline.audio_archive / day / 'evidence.json'
+        write_json(archive, {**audio, 'sources': {}, 'acoustics': []})
+        sync_sources(notes, self.pipeline.audio_archive, {day: {
+            'path': str(archive.relative_to(self.pipeline.audio_archive)), 'sha256': digest_bytes(archive)}})
+        archive.unlink()
+        work = self.root / 'work'
+        work.mkdir()
+        (work / '202611.md').write_text('1107\n工作日志补充')
+        sources = prepare(notes, work, day)
+        state = self.pipeline.prepare_analysis(day, sources)
+        self.assertIn('工作日志补充', Path(state['sameDaySources']).read_text())
+        self.request = load_request(self.products, state['requestId'])
+        self.assertEqual(self.request['items'][0]['material']['utterances'], audio['utterances'])
+        state = self.pipeline.ingest(self.envelope())
+        result_id = state['resultId']
+        screening = self.screening(result_id)
+        screening['dailyReviews'] = {day: {'overview': '当天概括与工作日志出处', 'highlights': []}}
+        self.pipeline.publish(result_id, screening)
+        note = notes / 'soundlog/daily' / (day + '.md')
+        self.assertIn('当天概括与工作日志出处', note.read_text())
+        self.assertIn('拿回来充电', note.read_text())
+        display = next(value for value in results(self.pipeline)['days'] if value['date'] == day)
+        self.assertEqual(display['summary'], screening['dailyReviews'][day]['overview'])
+        self.assertEqual(display['archive']['state'], 'archived')
+        self.assertEqual(self.pipeline.archive_delivery(day), str(note.resolve()))
+        self.pipeline.finish_products({'schemaVersion': 1, 'reviewer': 'test',
+                                       'sourceResultId': result_id, 'topics': []}, [])
+        self.assertTrue(self.pipeline.prepare_analysis(day, sources)['reused'])
+        (work / '202611.md').write_text('1107\n工作日志内容有更新')
+        self.assertEqual(self.pipeline.prepare_analysis(day, prepare(notes, work, day))['state'], 'awaiting_agent')
+        note.write_text('人工更新')
+        with self.assertRaisesRegex(ValueError, '人工维护'):
+            self.pipeline.archive_delivery(day)
 
     def test_start_archives_independently_of_old_semantic_work_and_questions(self):
         previous = self.pipeline.tick()

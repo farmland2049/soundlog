@@ -219,10 +219,16 @@ python3 scripts/soundlog_library.py ask '当时答应发送什么资料？' --qu
 
 工作台提供“跨天与每周复盘”入口。可用`soundlog_features.py review --from YYYY-MM-DD --to YYYY-MM-DD`生成范围证据索引，附`--spec`发布agent审阅后的精选复盘；命令只复用本机既有资料，不重新转写。儿童/成人学习分开，缺少资料的日期明确列出，历史承诺不直接当今天待办。每个段落可回到内容卡、原文与录音偏移，旧复盘版本保留。字段、边界与用法见[功能使用与验收](资料/A-F功能使用与验收.md)。
 
-### 手动准备单日个人记录
+### 每日经历分析与归档
 
-`scripts/soundlog_daily_record.py` 读取指定日期的录音归档、Basic Memory 笔记与当月工作日志。需提供 `--date YYYY-MM-DD`、`--notes <Basic Memory 笔记目录>` 和 `--work-log <工作管理/工作日志目录>`。`--root` 可指定实际存放录音的 Soundlog 目录。输出含私有取证材料，保存在本机运行目录或临时目录。
+在 Soundlog 项目运行以下命令。标准工作区会自动定位正式 Basic Memory 笔记目录。独立检出可在子命令前加 `--notes <笔记目录>`，或设置 `SOUNDLOG_BASIC_MEMORY_NOTES`。
 
-- 将 `audio.indexMarkdown` 写入 `audio.note` 指定的 Basic Memory 路径。先读当前正文和版本，已有索引且内容相同就复用。变化时只更新含 `soundlog:audio-evidence-index` 标记的轻量索引，并用读回所得的校验值保护更新。历史全量来源笔记保留。
-- 用当天资料整理生活、讨论、事项、学习与灵感。补充资料与录音同源时合并，保留出处与实际状态。来源缺失和无记录分别说明。可用 `--date YYYY-MM-DD --evidence 证据ID` 读回某条录音的内容、原音路径和偏移。
-- 在 `日常摘要/YYYY-MM-DD.md` 写入唯一的二级标题「综合记录」，其内容用 `<!-- soundlog:combined:start -->` 和 `<!-- soundlog:combined:end -->` 包围。同日再次运行先读回校验值，正文相同即跳过，有新增时只替换该段，保留其它文字和元数据。已发布的综合段会从后续取材中排除。首次没有主档时可在同一固定路径创建。
+```bash
+python3 scripts/soundlog_pipeline.py start
+python3 scripts/soundlog_pipeline.py prepare-analysis --date YYYY-MM-DD
+```
+
+- 音频处理保留项目内的原音、完整运行产物和技术索引。同步将逐句转写、时间戳、匿名说话人、声学事件和证据 ID 写入 Basic Memory 的 `soundlog/sources/YYYY-MM-DD.json`。既有 Markdown 来源笔记保留。已有录音可运行 `archive` 补齐每日素材。
+- `prepare-analysis` 从 Basic Memory 的当日素材生成分析请求，另在 `sameDaySources` 提供 Basic Memory 日常摘要、工作日结、事件及「工作管理」当日工作日志。可用 `--work-log` 指定工作日志目录。没有录音但有文字来源的日期也能处理。重复取材复用已完成结果，来源变化后可重新分析。
+- Agent 按[同日资料核对](scripts/pipeline-agent.md#同日资料核对)归纳内容，使用既有导入、筛选、发布与派生流程。发布通过同一份交付生成 Soundlog 界面数据和 Basic Memory 的 `soundlog/daily/YYYY-MM-DD.md`。旧成果可用 `archive-delivery --date YYYY-MM-DD` 补归档。正文发生人工修改时，归档会报告冲突。
+- `scripts/soundlog_daily_record.py --date YYYY-MM-DD --evidence 证据ID` 可回查已归档的原句、原音文件及偏移；路径独立变更后需对应更新原音定位。

@@ -5,6 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
 from soundlog_daily_record import BEGIN, END, prepare, work_section
+from soundlog_memory.basic_memory_daily import sync_sources
 from soundlog_memory.scenes import digest_bytes
 from soundlog_memory.store import write_json
 
@@ -28,19 +29,20 @@ class DailyRecordTests(unittest.TestCase):
             def set_archive(version, rows):
                 file = folder / day / (version + '.json')
                 write_json(file, {'date': day, 'sources': {}, 'utterances': rows, 'acoustics': []})
-                write_json(folder / 'latest.json', {'days': {day: {
-                    'path': str(file.relative_to(folder)), 'sha256': digest_bytes(file)}}})
-                return file
+                index = {day: {'path': str(file.relative_to(folder)), 'sha256': digest_bytes(file)}}
+                self.assertEqual(sync_sources(notes, folder, index), [day])
+                self.assertEqual(sync_sources(notes, folder, index), [])
+                return notes / 'soundlog/sources' / (day + '.json')
 
             set_archive('initial', [])
-            initial = prepare(root, notes, root / 'work', day)
+            initial = prepare(notes, root / 'work', day)
             self.assertEqual(initial['dailySummary']['content'], '# 日常摘要\n\n原笔记\n')
             self.assertEqual(initial['workLog']['state'], 'missing')
-            self.assertEqual(prepare(root, notes, root / 'work', day), initial)
+            self.assertEqual(prepare(notes, root / 'work', day), initial)
             latest = set_archive('late', [{'id': 'new'}])
-            updated = prepare(root, notes, root / 'work', day)
-            self.assertEqual(updated['audio']['note'], initial['audio']['note'])
-            self.assertIn('逐句原文 1 条', updated['audio']['indexMarkdown'])
-            latest.write_text('{}')
+            updated = prepare(notes, root / 'work', day)
+            self.assertEqual(updated['audio']['path'], initial['audio']['path'])
+            self.assertEqual(updated['audio']['utterances'], 1)
+            latest.write_text(latest.read_text().replace('new', 'tampered'))
             with self.assertRaisesRegex(ValueError, '哈希'):
-                prepare(root, notes, root / 'work', day)
+                prepare(notes, root / 'work', day)

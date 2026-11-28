@@ -14,10 +14,11 @@ from pathlib import Path
 
 from .products import export_request, import_result, load_request
 from .reading import load_verified_result
-from .scenes import resolve_snapshot, digest_bytes
+from .scenes import resolve_snapshot, digest_bytes, build_snapshot
 from .store import write_json
+from .evidence import digest
 from .daily_delivery import publish_daily
-from . import audio_archive
+from . import audio_archive, basic_memory_daily
 
 CATEGORIES = {'journal': '每日记录', 'minutes': '讨论纪要', 'actions': '录音中的事项',
               'child_learning': '儿童学习与陪伴', 'adult_learning': '成人学习与知识'}
@@ -25,12 +26,13 @@ AUDIO = {'.mp3', '.wav', '.m4a', '.aac', '.flac'}
 
 
 class Pipeline:
-    def __init__(self, root):
+    def __init__(self, root, notes=None):
         self.root = Path(root).resolve()
         self.home = self.root / '记忆库/运行/自动管线'
         self.products = self.root / '产出/功能提炼'
         self.scenes = self.root / '产出/大模型分析素材/每日场景-v2'
         self.delivery = self.root / '产出/自动交付'
+        self.notes = basic_memory_daily.notes_root(self.root, notes)
         self.audio_archive = self.root / '产出/每日录音归档'
         self.home.mkdir(parents=True, exist_ok=True)
 
@@ -60,8 +62,53 @@ class Pipeline:
         return json.loads(path.read_text()) if path.exists() else {'state': 'idle'}
 
     def archive_audio(self):
-        return audio_archive.publish(self.root / '产出/运行历史', self.root / '录音/已归档',
-                                     self.audio_archive)
+        archive = audio_archive.publish(self.root / '产出/运行历史', self.root / '录音/已归档',
+                                        self.audio_archive)
+        if self.notes is not None:
+            archive['basicMemoryUpdatedDates'] = basic_memory_daily.sync_sources(
+                self.notes, self.audio_archive, archive['days'])
+        return archive
+
+    def prepare_analysis(self, day, sources, *, refresh=False):
+        with self.lock():
+            state = self.state()
+            if state['state'] in {'awaiting_agent', 'awaiting_screening', 'awaiting_enrichment'}:
+                if day not in state.get('days', [day]):
+                    raise ValueError('请先完成当前日期的分析任务')
+                return state
+            if self.notes is None:
+                raise ValueError('请指定 Basic Memory 笔记目录')
+            audio_fingerprint = sources['audio'].get('fingerprint')
+            has_text = any(row['state'] == 'available' for row in
+                           [sources['dailySummary'], sources['workLedger'], sources['workLog'], *sources['events']])
+            if not audio_fingerprint and not has_text:
+                return {'state': 'idle', 'date': day, 'reason': 'no_sources'}
+            fingerprint = digest(sources)
+            processed = state.get('basicMemoryDayHashes', {})
+            if not refresh and processed.get(day) == fingerprint:
+                return {'state': 'idle', 'date': day, 'reused': True}
+            built = build_snapshot(self.notes, self.scenes, days=[day], notes=self.notes,
+                                   audio_fingerprints={day: audio_fingerprint})
+            source_path = self.home / 'same-day-sources' / (fingerprint + '.json')
+            write_json(source_path, sources)
+            request = export_request(Path(built['snapshot']), self.products, days=[day])
+            return self.save({**state, 'state': 'awaiting_agent', 'days': [day],
+                              'requestId': request['requestId'], 'snapshotId': built['snapshotId'],
+                              'requestDirectory': request['directory'],
+                              'sameDaySources': str(source_path), 'analysisSnapshot': built['snapshot'],
+                              'pendingBasicMemoryDayHashes': {**processed, day: fingerprint}})
+
+    def archive_delivery(self, day, bundle=None):
+        if self.notes is None:
+            raise ValueError('请指定 Basic Memory 笔记目录')
+        if bundle is None:
+            bundle = json.loads((self.delivery / 'catalog.json').read_text())['days'][day]
+        path = basic_memory_daily.publish_note(self.notes, self.delivery, bundle, day, CATEGORIES)
+        if path is None:
+            raise ValueError('归档前需完成当日复盘')
+        from . import daily_archive
+        daily_archive.confirm_note(self, day, bundle, path)
+        return str(path)
 
     def start(self):
         """Process audio and verify its date index independently of semantic jobs."""
@@ -94,6 +141,8 @@ class Pipeline:
             remaining = [path.name for path in self.inventory()]
             result = {'state': 'idle', 'complete': not remaining, 'checkedAudioFiles': names,
                       'remainingAudioFiles': remaining, 'updatedDates': archive['updatedDates'],
+                      'basicMemoryUpdatedDates': archive.get('basicMemoryUpdatedDates', []),
+                      'basicMemorySources': str(self.notes / 'soundlog/sources') if self.notes else None,
                       'archiveIndex': str(self.audio_archive / 'latest.json') if archive['days'] else None}
             write_json(state_path, result)
             return result
@@ -272,6 +321,12 @@ class Pipeline:
             else:
                 os.rename(dest, final)
             dest = final
+            if state.get('sameDaySources') and not all(screening.get('dailyReviews', {}).get(day) for day in days):
+                raise ValueError('请完成每个分析日期的同日资料复盘')
+            if self.notes is not None:
+                for day in days:
+                    if screening.get('dailyReviews', {}).get(day):
+                        self.archive_delivery(day, bundle=dest.name)
             catalog_path = self.delivery / 'catalog.json'
             catalog = json.loads(catalog_path.read_text()) if catalog_path.exists() else {'days': {}}
             for day in days: catalog['days'][day] = dest.name
@@ -295,9 +350,14 @@ class Pipeline:
             hashes = state.get('pendingDayHashes')
             if adopt:
                 hashes = {n[:10]: sha for n,sha in sr['artifacts'].items() if n.endswith('_utterances.json')}
+            saved_snapshots = state.get('basicMemorySnapshots', {})
+            if state.get('analysisSnapshot'):
+                saved_snapshots = {**saved_snapshots, **dict.fromkeys(days, state['analysisSnapshot'])}
             self.save({'schemaVersion': 1, 'state': 'idle' if adopt else 'awaiting_enrichment',
                        'dayHashes': hashes or state.get('dayHashes', {}), 'lastBundle': dest.name,
-                       'resultId':rid})
+                       'resultId':rid, 'days': days, 'basicMemorySnapshots': saved_snapshots,
+                       'basicMemoryDayHashes': state.get('pendingBasicMemoryDayHashes',
+                                                        state.get('basicMemoryDayHashes', {}))})
             from . import daily_archive
             try:
                 daily_archive.prepare(self, {day: dest.name for day in days})
@@ -316,7 +376,9 @@ class Pipeline:
                 raise ValueError('当前任务不在产品扩展阶段')
             if spec.get('sourceResultId')!=state['resultId']:
                 raise ValueError('派生方案未绑定当前结果')
-            products=publish_derived(self.delivery,spec,self.scenes)
+            raw_snapshot = [self.scenes] if (self.scenes / 'latest.json').exists() else []
+            raw_snapshot.extend(Path(path) for path in sorted(set(state.get('basicMemorySnapshots', {}).values())))
+            products=publish_derived(self.delivery,spec,raw_snapshot=raw_snapshot)
             features_home=self.root/'记忆库/运行/产品功能'
             graph=publish_task_graph(self.delivery,features_home,links)
             write_json(features_home/'derived-spec.json',spec)

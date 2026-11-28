@@ -39,6 +39,15 @@ def remember_verified(pipeline, receipt):
         write_json(index, confirmed)
 
 
+def confirm_note(pipeline, day, bundle, path):
+    index = _home(pipeline) / 'confirmed.json'
+    confirmed = json.loads(index.read_text()) if index.exists() else {}
+    entry = {'bundle': bundle, 'path': str(path), 'sha256': digest_bytes(path)}
+    if confirmed.get(day) != entry:
+        confirmed[day] = entry
+        write_json(index, confirmed)
+
+
 def prepare(pipeline, days):
     """Stage reviewable drafts after publication. Archive failures remain separate."""
     for date, bundle in days.items():

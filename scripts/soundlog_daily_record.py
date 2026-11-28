@@ -5,26 +5,11 @@ import json
 import re
 from pathlib import Path
 
-from soundlog_memory.evidence import day_bounds, read_json
-from soundlog_memory.scenes import digest_bytes
+from soundlog_memory.basic_memory_daily import read_sources, notes_root
+from soundlog_memory.evidence import day_bounds
 
 BEGIN = '<!-- soundlog:combined:start -->'
 END = '<!-- soundlog:combined:end -->'
-
-
-def archive_for_day(root, day):
-    day_bounds(day)
-    index = root / '产出/每日录音归档'
-    row = read_json(index / 'latest.json')['days'].get(day)
-    if row is None:
-        return None, None
-    target = (index / row['path']).resolve()
-    if target.parent != index.resolve() / day or digest_bytes(target) != row['sha256']:
-        raise ValueError('录音归档路径或哈希与日期索引不符')
-    archive = read_json(target)
-    if archive['date'] != day:
-        raise ValueError('录音归档日期不符')
-    return target, archive
 
 
 def work_section(text, day):
@@ -52,25 +37,14 @@ def source(path, transform=None):
             'content': content}
 
 
-def prepare(root, notes, work_log, day):
+def prepare(notes, work_log, day):
     try:
-        path, archive = archive_for_day(root, day)
-        audio = {'state': 'available' if archive else 'no_entries'}
+        path, archive = read_sources(notes, day)
+        audio = {'state': 'available', 'path': str(path), 'fingerprint': archive['fingerprint'],
+                 'utterances': len(archive['utterances']), 'acoustics': len(archive['acoustics'])}
     except FileNotFoundError:
-        path, archive = None, None
-        audio = {'state': 'missing'}
-    if archive:
-        ranges = sorted((row['start'], row['end']) for row in archive['sources'].values())
-        lines = [
-            f'# {day} Soundlog 录音证据索引', '', '<!-- soundlog:audio-evidence-index -->', '',
-            f'归档状态：已校验。原音 {len(ranges)} 份，逐句原文 {len(archive["utterances"])} 条，环境声事件 {len(archive["acoustics"])} 条。',
-            f'归档版本：`{path.stem}`', f'SHA-256：`{digest_bytes(path)}`', '',
-            f'[打开本机证据 JSON]({path.as_uri()})', '', '## 录音覆盖区间', '',
-            *[f'- {start} 至 {end}' for start, end in ranges], '',
-            '区间为录音源的时段，同一文件跨日时保留原始起止。逐句通过证据 ID 定位，原音回听使用对应文件与原偏移。',
-            '文字和匿名标签为机器输出。',
-        ]
-        audio.update(path=str(path), note=f'soundlog/sources/{day}.md', indexMarkdown='\n'.join(lines)+'\n')
+        audio = {'state': 'no_entries'}
+
     def strip_generated(body):
         pattern = r'^## 综合记录[ \t]*\r?\n(?:[ \t]*\r?\n)*' + re.escape(BEGIN)
         return re.sub(pattern + '.*?' + re.escape(END), '', body, flags=re.M | re.S).rstrip() + '\n'
@@ -93,8 +67,11 @@ def main():
     args = parser.parse_args()
     try:
         day_bounds(args.date)
+        notes = notes_root(args.root.resolve(), args.notes)
+        if notes is None:
+            parser.error('请指定 Basic Memory 笔记目录')
         if args.evidence:
-            _, archive = archive_for_day(args.root, args.date)
+            _, archive = read_sources(notes, args.date)
             if not archive:
                 raise ValueError('日期没有录音归档')
             row = next((item for item in archive['utterances'] if item['id'] == args.evidence), None)
@@ -105,9 +82,9 @@ def main():
                 raise ValueError('归档音频无法读取')
             result = {**row, 'audio': original}
         else:
-            if args.notes is None or args.work_log is None:
-                parser.error('准备材料需要 --notes 和 --work-log')
-            result = prepare(args.root, args.notes, args.work_log, args.date)
+            if args.work_log is None:
+                parser.error('准备材料需要 --work-log')
+            result = prepare(notes, args.work_log, args.date)
         print(json.dumps(result, ensure_ascii=False, indent=2))
     except (OSError, ValueError, KeyError, TypeError) as error:
         parser.exit(2, f'取证失败：{error}\n')

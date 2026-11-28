@@ -138,15 +138,15 @@ def legacy_comparison(legacy_dir, day, document):
         return {'available': False, 'error': str(exc)}
 
 
-def build_snapshot(runs, output, *, days=None, gap_seconds=90, legacy_dir=None):
+def build_snapshot(runs, output, *, days=None, gap_seconds=90, legacy_dir=None, notes=None, audio_fingerprints=None):
     started, tick = now(), time.monotonic()
     candidate_sessions([], gap_seconds)  # reject invalid parameters even with no input
     runs, output = Path(runs).resolve(), Path(output).resolve()
-    if not runs.is_dir():
+    if notes is None and not runs.is_dir():
         raise ValueError('运行产物目录不存在')
     if output == runs or output in runs.parents or runs in output.parents:
         raise ValueError('输出目录必须与原始运行产物目录分离')
-    catalog = scan_artifacts(runs)
+    catalog = scan_artifacts(runs) if notes is None else None
     requested = sorted(set(days if days is not None else discover_days(catalog)))
     for day in requested:
         day_bounds(day)
@@ -162,8 +162,21 @@ def build_snapshot(runs, output, *, days=None, gap_seconds=90, legacy_dir=None):
         try:
             warnings, summaries, fingerprints = [], [], []
             for day in requested:
-                package, manifest = build_evidence(runs, day, catalog=catalog, include_references=True)
-                if not package['utterances'] and not package['acoustics']:
+                if notes is None:
+                    package, manifest = build_evidence(runs, day, catalog=catalog, include_references=True)
+                else:
+                    from .basic_memory_daily import read_sources
+                    expected = audio_fingerprints[day]
+                    if expected is None:
+                        package = {'date': day, 'sources': {}, 'utterances': [], 'acoustics': [],
+                                   'fingerprint': digest({'date': day, 'audio': None})}
+                    else:
+                        _, package = read_sources(notes, day)
+                        if package['fingerprint'] != expected:
+                            raise ValueError('Basic Memory 取材期间录音版本发生变化，请重试')
+                    manifest = {'sources': package['sources'], 'warnings': [],
+                                'fingerprint': package['fingerprint']}
+                if notes is None and not package['utterances'] and not package['acoustics']:
                     raise ValueError(f'{day} 没有可用证据；不发布空日期')
                 doc = dossier(package, gap_seconds)
                 refs = [r for scene in doc['scenes'] for r in scene['utteranceIds']]
@@ -198,7 +211,7 @@ def build_snapshot(runs, output, *, days=None, gap_seconds=90, legacy_dir=None):
             artifacts = {p.name: digest_bytes(p) for p in sorted(stage.iterdir())}
             receipt = {**identity, 'snapshotId': snapshot_id, 'startedAt': started, 'finishedAt': now(),
                        'wallClockSeconds': time.monotonic() - tick, 'state': 'partial' if warnings else 'completed',
-                       'artifacts': artifacts, 'inputDirectory': str(runs),
+                       'artifacts': artifacts, 'inputDirectory': str(notes if notes is not None else runs),
                        'interpretationBoundary': '只验证来源和组织完整性，未听音核验、未确认身份或生成本人事实。'}
             write_json(stage / 'receipt.json', receipt)
             reused = destination.exists()
@@ -212,7 +225,7 @@ def build_snapshot(runs, output, *, days=None, gap_seconds=90, legacy_dir=None):
             else:
                 os.rename(stage, destination)
             # A partial result is reviewable, but must not replace a valid default.
-            default_updated = not warnings and (days is None or requested == discover_days(catalog))
+            default_updated = notes is None and not warnings and (days is None or requested == discover_days(catalog))
             if default_updated:
                 write_json(output / 'latest.json', {'snapshot': destination.name, 'snapshotId': snapshot_id})
             return {'state': receipt['state'], 'execution': 'reuse' if reused else 'generated',

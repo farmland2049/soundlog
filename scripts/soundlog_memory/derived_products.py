@@ -49,10 +49,12 @@ def publish_derived(delivery, spec, raw_snapshot=None):
         if rel.get('type') not in {'shared_theme','supplements','contradicts','question'}:raise ValueError('主题关系无效，不自动推断因果')
         _text(rel['reason']);refs(rel['factIds'])
     evidence={e['id']:e for f in facts.values() for e in f['evidence']}
-    raw_identity=None
-    if raw_snapshot is not None:
+    raw_identities = []
+    snapshots = raw_snapshot if isinstance(raw_snapshot, list) else [raw_snapshot] if raw_snapshot else []
+    for snapshot_path in snapshots:
         from .scenes import resolve_snapshot
-        snapshot=resolve_snapshot(raw_snapshot);raw_receipt=json.loads((snapshot/'receipt.json').read_text());raw_identity=raw_receipt['snapshotId']
+        snapshot=resolve_snapshot(snapshot_path);raw_receipt=json.loads((snapshot/'receipt.json').read_text())
+        raw_identities.append(raw_receipt['snapshotId'])
         for name,sha in raw_receipt['artifacts'].items():
             if name.endswith('_utterances.json'):
                 path=snapshot/name
@@ -83,7 +85,7 @@ def publish_derived(delivery, spec, raw_snapshot=None):
         for section in plan['sections']:
             _text(section['title']);refs(section['factIds'])
             if not set(section['factIds'])<=set(plan['factIds']):raise ValueError('写作引用越界')
-    identity=hashlib.sha256(json.dumps({'spec':spec,'facts':facts,'rawSnapshotId':raw_identity,'implementation':digest_bytes(Path(__file__))},sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:24]
+    identity=hashlib.sha256(json.dumps({'spec':spec,'facts':facts,'rawSnapshotId':raw_identities[0] if len(raw_identities) == 1 else raw_identities or None,'implementation':digest_bytes(Path(__file__))},sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:24]
     parent=delivery/'derived';parent.mkdir(exist_ok=True);final=parent/('derived-'+identity)
     stage=Path(tempfile.mkdtemp(prefix='.building-',dir=parent))
     try:
